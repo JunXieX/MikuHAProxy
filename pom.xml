@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  MikuHAProxy —— 让 Velocity 4.0 同时接受「代理（HAProxy PROXY protocol）」与「直连」
+
+  作者：JunXieX（MikuMC 服务器）
+  构建：mvn clean package
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>io.github.junxiex</groupId>
+    <artifactId>mikuhaproxy</artifactId>
+    <version>1.0.1</version>
+    <packaging>jar</packaging>
+
+    <name>MikuHAProxy</name>
+    <description>让 Velocity 的代理连接（PROXY protocol）与直连同时可用，并只放行可信来源。</description>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+        <!-- Velocity 4.0 要求 Java 25（velocity-api 的字节码版本即为 69 = Java 25） -->
+        <maven.compiler.release>25</maven.compiler.release>
+
+        <velocity.version>4.0.0</velocity.version>
+        <!--
+          仅编译期使用，运行期由代理端自己提供。已核对上游 PaperMC/Velocity 与
+          GemstoneGG/Velocity-CTD 各自的 gradle/libs.versions.toml：两者声明的 Netty 均为
+          4.2.18.Final，因此不会出现编译期与运行期 Netty API 版本错配导致的 NoSuchMethodError。
+        -->
+        <netty.version>4.2.18.Final</netty.version>
+        <junit.version>5.14.0</junit.version>
+    </properties>
+
+    <build>
+        <finalName>MikuHAProxy-${project.version}</finalName>
+
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.6.2</version>
+                <executions>
+                    <execution>
+                        <id>enforce-build-environment</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <requireMavenVersion>
+                                    <version>[3.8,)</version>
+                                </requireMavenVersion>
+                                <requireJavaVersion>
+                                    <version>[25,)</version>
+                                </requireJavaVersion>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.14.0</version>
+                <configuration>
+                    <release>${maven.compiler.release}</release>
+                    <!--
+                      JDK 23 起 javac 默认不再隐式执行注解处理，这里显式打开。
+                      Velocity 的 velocity-plugin.json（插件元数据）由 velocity-api 自带的
+                      PluginAnnotationProcessor 在编译期生成，必须依赖这一步。
+                    -->
+                    <compilerArgs>
+                        <arg>-proc:full</arg>
+                        <arg>-Xlint:all,-processing,-serial</arg>
+                    </compilerArgs>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>com.velocitypowered</groupId>
+                            <artifactId>velocity-api</artifactId>
+                            <version>${velocity.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.2</version>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.3</version>
+            </plugin>
+        </plugins>
+    </build>
+
+    <repositories>
+        <repository>
+            <id>papermc</id>
+            <url>https://repo.papermc.io/repository/maven-public/</url>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+
+    <dependencies>
+        <!-- 编译期依赖：运行期全部由 Velocity 自己提供，不打进插件 jar -->
+        <dependency>
+            <groupId>com.velocitypowered</groupId>
+            <artifactId>velocity-api</artifactId>
+            <version>${velocity.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!--
+          Netty 的 PROXY protocol 编解码器。Velocity 的 ServerChannelInitializer 会用到
+          HAProxyMessageDecoder，所以运行期一定存在；这里只用于编译，不打进插件 jar。
+          不排除传递依赖：netty-transport / netty-buffer / netty-common 里的
+          io.netty.channel、io.netty.buffer 等包是本插件直接使用的 API。
+        -->
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-codec-haproxy</artifactId>
+            <version>${netty.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- 测试 -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

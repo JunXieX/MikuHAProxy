@@ -1,0 +1,39 @@
+name: Build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build
+        run: mvn -B -ntp package
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jars
+          path: target/MikuHAProxy-*.jar
+          if-no-files-found: error
+
+      - name: Publish Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/MikuHAProxy-*.jar
+          prerelease: ${{ contains(github.ref_name, 'Beta') }}
+          generate_release_notes: true
