@@ -4,7 +4,13 @@ on:
   push:
     branches: ["**"]
     tags: ["v*"]
+  pull_request:
   workflow_dispatch:
+    inputs:
+      modrinth_check:
+        description: "只在 Modrinth 做一次只读校验（检查令牌/项目可达性，不上传任何东西）"
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -14,7 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
         with:
           java-version: '25'
           distribution: 'temurin'
@@ -37,3 +44,222 @@ jobs:
           files: target/MikuHAProxy-*.jar
           prerelease: ${{ contains(github.ref_name, 'Beta') }}
           generate_release_notes: true
+
+      # ------------------------------------------------------------------
+      # README → Modrinth 项目页：**面向用户的文档只维护 README.md 一份**，
+      # 这里把它的原文同步成 Modrinth 的 body，并把开头两句（英文段+中文段）拼成摘要。
+      # 只在 main 与 tag 上跑（不从特性分支把未定稿的文档推上去），PR 跳过。
+      # 审核期间 Modrinth 会锁编辑，此时只打印警告、不让构建变红。
+      # ------------------------------------------------------------------
+      - name: Sync README to Modrinth
+        if: >-
+          github.event_name != 'pull_request'
+          && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          PROJECT: SPh6m4k5
+        run: |
+          python3 - <<'PY'
+          import json, os, re, sys, urllib.error, urllib.request
+
+          try:
+              sys.stdout.reconfigure(encoding='utf-8')
+          except Exception:
+              pass
+
+          token = (os.environ.get('MODRINTH_TOKEN') or '').strip()
+          if not token:
+              print('未配置 MODRINTH_TOKEN，跳过同步。')
+              sys.exit(0)
+
+          PROJECT = os.environ['PROJECT']
+          API = 'https://api.modrinth.com/v2'
+          with open('README.md', encoding='utf-8') as f:
+              body = f.read().rstrip() + '\n'
+
+          # 摘要 = README 第一个二级标题之前，第一段纯英文 + 第一段含中文，用 ` ｜ ` 连接
+          head = body.split('\n## ', 1)[0]
+          paras = []
+          for raw in re.split(r'\n\s*\n', head):
+              p = ' '.join(l.strip() for l in raw.strip().splitlines() if l.strip())
+              if p and not p.startswith(('#', '- ', '*')):
+                  paras.append(p)
+          cjk = re.compile(r'[\u4e00-\u9fff]')
+          en = next((p for p in paras if not cjk.search(p)), '')
+          zh = next((p for p in paras if cjk.search(p)), '')
+          # 保险：README 开头必须同时有英文段与中文段，否则拒绝同步。
+          # 否则万一仓库里的 README 还是旧的纯中文版，会把项目页已有的英文覆盖掉
+          # （Modrinth 审核硬要求英文），所以这里宁可让步骤失败也不做破坏性写入。
+          if not en or not zh:
+              print('README 开头缺少%s段落，拒绝同步（Modrinth 审核要求摘要/描述含英文）。'
+                    % ('英文' if not en else '中文'))
+              sys.exit(1)
+          desc = '%s ｜ %s' % (en, zh)
+          if len(desc) > 256:
+              print('警告：摘要 %d 字符超限，已截断（请把 README 开头两句写短）' % len(desc))
+              desc = desc[:255] + '…'
+
+          def call(method, path, data=None, ctype=None):
+              req = urllib.request.Request(API + path, data=data, method=method)
+              req.add_header('User-Agent', 'MikuMC-Plugin-Dev/1.0')
+              req.add_header('Authorization', token)
+              if ctype:
+                  req.add_header('Content-Type', ctype)
+              try:
+                  with urllib.request.urlopen(req, timeout=120) as r:
+                      raw = r.read().decode('utf-8')
+                      return r.status, (json.loads(raw) if raw.strip() else {})
+              except urllib.error.HTTPError as e:
+                  return e.code, {'error': e.read().decode('utf-8', 'replace')[:400]}
+
+          st, p = call('GET', '/project/%s' % PROJECT)
+          if st != 200:
+              print('读取项目失败:', st, p)
+              sys.exit(1)
+          if (p.get('body') or '').rstrip() == body.rstrip() and p.get('description') == desc:
+              print('[skip] Modrinth 上的正文与摘要已与 README 一致，无需更新')
+              sys.exit(0)
+
+          data = json.dumps({'description': desc, 'body': body}, ensure_ascii=False).encode()
+          st, resp = call('PATCH', '/project/%s' % PROJECT, data, 'application/json')
+          if st in (200, 204):
+              print('已同步 README → Modrinth（body %d 字符，摘要 %d 字符）' % (len(body), len(desc)))
+              sys.exit(0)
+          if st == 400 and 'validation nags' in str(resp):
+              print('项目正在审核中（status=%s），Modrinth 暂锁编辑；审核结束后重跑本步骤即可。'
+                    % p.get('status'))
+              sys.exit(0)
+          print('同步失败:', st, resp)
+          sys.exit(1)
+          PY
+
+      # ------------------------------------------------------------------
+      # Modrinth：只有「正式版」（tag 不含 Beta）才上传；测试版完全跳过。
+      # 幂等：该版本号已存在时直接跳过，重复跑工作流不会产生重复版本。
+      # 想先验证令牌/项目是否可达，可在 Actions 页面手动触发并勾选 modrinth_check。
+      # ------------------------------------------------------------------
+      - name: Publish to Modrinth
+        if: >-
+          (startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, 'Beta'))
+          || inputs.modrinth_check
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          MODRINTH_CHECK_ONLY: ${{ inputs.modrinth_check }}
+          # 支持的游戏版本（与 Modrinth 项目元数据保持一致）；上游新增 MC 版本时改这一行
+          GAME_VERSIONS: "26.1,26.1.1,26.1.2,26.2,26.3"
+        run: |
+          python3 - <<'PY'
+          import glob, io, json, os, sys, urllib.error, urllib.request, uuid
+
+          try:
+              sys.stdout.reconfigure(encoding='utf-8')
+          except Exception:
+              pass
+
+          API = 'https://api.modrinth.com/v2'
+          # 项目 id（base62）。必须用 id 而不是 slug：项目尚未公开时，用 slug 上传版本会 401
+          PROJECT = 'SPh6m4k5'
+          TOKEN = os.environ['MODRINTH_TOKEN']
+          CHECK_ONLY = (os.environ.get('MODRINTH_CHECK_ONLY') or '').strip().lower() == 'true'
+          TAG = os.environ['TAG']
+          VERSION = TAG.lstrip('v')
+          GAME_VERSIONS = [v for v in (os.environ.get('GAME_VERSIONS') or '').split(',') if v]
+          LOADERS = ['velocity']
+
+
+          def call(method, path, data=None, ctype=None):
+              req = urllib.request.Request(API + path, data=data, method=method)
+              req.add_header('User-Agent', 'MikuMC-Plugin-Dev/1.0')
+              req.add_header('Authorization', TOKEN)
+              if ctype:
+                  req.add_header('Content-Type', ctype)
+              try:
+                  with urllib.request.urlopen(req, timeout=120) as r:
+                      raw = r.read().decode('utf-8')
+                      return r.status, (json.loads(raw) if raw.strip() else {})
+              except urllib.error.HTTPError as e:
+                  return e.code, {'error': e.read().decode('utf-8', 'replace')[:400]}
+
+
+          status, versions = call('GET', '/project/%s/version' % PROJECT)
+          if status != 200:
+              print('读取项目版本失败:', status, versions)
+              sys.exit(1)
+          existing = [v['version_number'] for v in versions]
+          print('项目 %s 现有版本:' % PROJECT, existing or '(空)')
+
+          if CHECK_ONLY:
+              print('[check-only] 只读校验通过：令牌可用、项目可访问、未上传任何内容')
+              sys.exit(0)
+
+          if VERSION in existing:
+              print('[skip] Modrinth 上已存在 %s，跳过上传（幂等）' % VERSION)
+              sys.exit(0)
+
+          # changelog 复用 GitHub Release 正文，避免两处各写一份
+          changelog = 'MikuHAProxy %s（正式版）' % VERSION
+          try:
+              req = urllib.request.Request(
+                  'https://api.github.com/repos/%s/releases/tags/%s' % (os.environ['REPO'], TAG))
+              req.add_header('User-Agent', 'MikuMC-Plugin-Dev/1.0')
+              req.add_header('Authorization', 'Bearer ' + os.environ['GITHUB_TOKEN'])
+              req.add_header('Accept', 'application/vnd.github+json')
+              with urllib.request.urlopen(req, timeout=60) as r:
+                  body = (json.loads(r.read().decode()) or {}).get('body') or ''
+              if body.strip():
+                  changelog = body
+          except Exception as exc:
+              print('取 GitHub Release 正文失败，改用兜底 changelog:', repr(exc))
+
+          jars = [p for p in glob.glob('target/MikuHAProxy-*.jar')
+                  if 'original-' not in os.path.basename(p)]
+          if len(jars) != 1:
+              print('期望恰好一个 jar，实际:', jars)
+              sys.exit(1)
+          jar = jars[0]
+          with open(jar, 'rb') as f:
+              content = f.read()
+          filename = os.path.basename(jar)
+
+          data = {
+              'project_id': PROJECT,
+              'name': 'MikuHAProxy %s' % VERSION,
+              'version_number': VERSION,
+              'changelog': changelog,
+              'version_type': 'release',
+              'game_versions': GAME_VERSIONS,
+              'loaders': LOADERS,
+              'environment': 'server_only',
+              'file_parts': ['file'],
+              'primary_file': 'file',
+              'status': 'listed',
+              'featured': False,
+              'dependencies': [],
+          }
+
+          boundary = '----MikuMC' + uuid.uuid4().hex
+          buf = io.BytesIO()
+          buf.write(('--%s\r\n' % boundary).encode())
+          buf.write(b'Content-Disposition: form-data; name="data"\r\n\r\n')
+          buf.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
+          buf.write(b'\r\n')
+          buf.write(('--%s\r\n' % boundary).encode())
+          buf.write(('Content-Disposition: form-data; name="file"; filename="%s"\r\n'
+                     % filename).encode())
+          buf.write(b'Content-Type: application/java-archive\r\n\r\n')
+          buf.write(content)
+          buf.write(b'\r\n')
+          buf.write(('--%s--\r\n' % boundary).encode())
+
+          status, resp = call('POST', '/version', buf.getvalue(),
+                              'multipart/form-data; boundary=%s' % boundary)
+          if status in (200, 201):
+              print('已发布到 Modrinth: %s (%s) id=%s' % (
+                  resp.get('version_number'), resp.get('version_type'), resp.get('id')))
+          else:
+              print('上传失败:', status, resp)
+              sys.exit(1)
+          PY
