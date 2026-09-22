@@ -4,7 +4,7 @@ Lets Velocity 4.0 accept both HAProxy PROXY protocol connections and direct play
 
 让 Velocity 4.0 同时接受「代理连接（HAProxy PROXY protocol）」与「玩家直连」，并且只放行可信来源发来的 PROXY 头。
 
-- Version: **1.0.1**
+- Version: **1.1.0**
 - Author: **JunXieX** (MikuMC Server)
 - QQ Group: **1105054380**
 
@@ -44,6 +44,15 @@ There is no room for ambiguity here: the "client address" declared inside a PROX
 When the whitelist is empty, **all proxied connections are rejected** and only direct connections are kept. That is a deliberate safe default.
 
 白名单为空时，**所有代理连接都会被拒绝**，只保留直连。这是刻意的安全默认值。
+
+Two things must be said plainly:
+
+有两点必须说清楚：
+
+- The whitelist governs **only** whose PROXY header is trusted. It does **not** restrict direct connections: any address that can reach the proxy port is still let in as a direct connection. If that port is exposed to the internet, control direct access with a firewall of your own.
+    - 白名单只管「谁的 PROXY 头会被采信」，它**不限制直连**：任何能连到代理端口的地址，仍然可以按直连的方式进来。代理端口若对公网开放，请用防火墙单独控制直连来源。
+- The shipped `whitelist.conf` already contains `127.0.0.0/8` and `::1/128`. That is **deliberate trust in loopback** — the usual deployment puts HAProxy and Velocity on the same machine — and the price is that any process on that machine which can reach the port may send a PROXY header claiming to be any IP, and have it believed. If the machine has untrusted users, delete those two lines and whitelist only HAProxy's actual address.
+    - 出厂的 `whitelist.conf` 里预置了 `127.0.0.0/8` 与 `::1/128`。这是**有意的回环信任**（绝大多数部署把 HAProxy 与 Velocity 放在同一台机器上），代价是本机上任何能连到这个端口的进程，都可以发一个「自称任意 IP」的 PROXY 头并被采信。若这台机器上有不受信任的其他用户，请删掉这两条，改成只写 HAProxy 的实际地址。
 
 ## How It Works
 
@@ -85,8 +94,8 @@ The decision is progressive: the v2 signature starts with `0x0D` and the v1 pref
 
 **安装**
 
-1. Put `MikuHAProxy-1.0.1.jar` into the proxy's `plugins/` directory.
-    - 把 `MikuHAProxy-1.0.1.jar` 放进代理端的 `plugins/` 目录。
+1. Put `MikuHAProxy-1.1.0.jar` into the proxy's `plugins/` directory.
+    - 把 `MikuHAProxy-1.1.0.jar` 放进代理端的 `plugins/` 目录。
 2. Start the proxy once. The plugin creates its data directory `plugins/MikuHAProxy/`, containing `config.toml` and `whitelist.conf`.
     - 启动一次代理。插件会生成数据目录 `plugins/MikuHAProxy/`，内含 `config.toml` 与 `whitelist.conf`。
 3. Set `proxy-protocol = true` in `velocity.toml`, then **restart the proxy** (this option is not hot-reloadable).
@@ -202,7 +211,7 @@ What the connection counters in `status` mean:
 | Direct | Connections classified as direct |
 | Proxied | Connections classified as proxied and accepted by the whitelist |
 | Rejected | Connections classified as proxied whose source is not on the whitelist, and which were closed |
-| Not injected | No PROXY decoder was found at the head of the pipeline (usually means `proxy-protocol` is off in `velocity.toml`) |
+| Not injected | No PROXY decoder was found anywhere in the pipeline (usually means `proxy-protocol` is off in `velocity.toml`) |
 | Errors | Connections where the decision raised an exception or injection failed, and which were handled as before |
 
 | 计数 | 含义 |
@@ -210,7 +219,7 @@ What the connection counters in `status` mean:
 | 直连 | 判定为直连的连接数 |
 | 代理 | 判定为代理连接、且白名单校验通过的连接数 |
 | 拒绝 | 判定为代理连接但来源不在白名单，已被关闭的连接数 |
-| 未注入 | 管道首位没有找到 PROXY 解码器（通常意味着 `velocity.toml` 没开 `proxy-protocol`） |
+| 未注入 | 管道里没有找到 PROXY 解码器（通常意味着 `velocity.toml` 没开 `proxy-protocol`） |
 | 异常 | 判定过程出现异常或注入失败，已按原有方式处理的连接数 |
 
 ## Troubleshooting
@@ -255,6 +264,6 @@ The plugin starts as usual, the bad entry falls back to its default, and the pro
 
 This project is an original plugin of the MikuMC server, released to the public free of charge. The MikuMC server and the author JunXieX hold the copyright of this project. This project is not open source, please note.
 
-本项目为 MikuMC 服务器原创插件，公开给大众免费使用，MikuMC 服务器 与作者 JunXieX 享有项目著作权，本项目非开源项目，请注意。
+本项目为 MikuMC 服务器原创插件，公开给大众免费使用，MikuMC 服务器与作者 JunXieX 享有项目著作权，本项目非开源项目，请注意。
 
 MikuMC 系列插件交流群：**1105054380**

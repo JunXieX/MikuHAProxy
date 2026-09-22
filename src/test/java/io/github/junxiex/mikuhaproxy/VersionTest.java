@@ -43,9 +43,19 @@ class VersionTest {
     }
 
     @Test
-    @DisplayName("版本号形态符合发版规则：x.y.z（正式版）或 x.y.z-Beta（测试版）")
+    @DisplayName("版本号形态符合发版规则：x.y.z-Beta（测试版）或 x.y.0（正式版）")
     void versionShapeFollowsReleaseRule() {
-        assertTrue(MikuHAProxy.VERSION.matches("\\d+\\.\\d+\\.\\d+(-Beta)?"),
-                "版本号只能是 1.0.2 或 1.0.2-Beta 这种形态，实际是 " + MikuHAProxy.VERSION);
+        final Matcher matcher = Pattern.compile("^(\\d+)\\.(\\d+)\\.(\\d+)(-Beta)?$")
+                .matcher(MikuHAProxy.VERSION);
+        assertTrue(matcher.matches(),
+                "版本号只能是 1.0.2-Beta 或 1.1.0 这种形态，实际是 " + MikuHAProxy.VERSION);
+
+        if (matcher.group(4) == null) {
+            // 正式版恒为 x.y.0：第二位 +1、第三位归零（1.4.2-Beta → 1.5.0）。
+            // 少了这条，1.0.2 这种「看着像测试版直接转正」的号就会混进来，
+            // 而它既不是测试版、又不是规则允许的正式版形态。
+            assertEquals("0", matcher.group(3),
+                    "正式版必须是 x.y.0 形态（第三位归零），实际是 " + MikuHAProxy.VERSION);
+        }
     }
 }
