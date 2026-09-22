@@ -52,6 +52,13 @@ jobs:
       # 审核期间 Modrinth 会锁编辑，此时只打印警告、不让构建变红。
       # ------------------------------------------------------------------
       - name: Sync README to Modrinth
+        # 放行失败：这一步只是把 README 原文贴到项目页正文，不该有阻断发版的权力。
+        # 2026-09-22 首发 1.1.0 时踩到过真实后果 —— Modrinth 侧数据库故障
+        # （GET /project/{id} 返回 500，`relation "link_platforms" does not exist`），
+        # 这一步 exit 1 导致紧随其后的「Publish to Modrinth」被整步 skip：
+        # GitHub Release 已经发出去、jar 也挂上了，唯独版本没进 Modrinth。
+        # 加 continue-on-error 后该步骤失败仍会标红可查，但不再拖累版本上传。
+        continue-on-error: true
         if: >-
           github.event_name != 'pull_request'
           && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
