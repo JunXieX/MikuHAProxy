@@ -193,9 +193,9 @@ class ProxyProtocolDetectorTest {
         assertArrayEquals(HANDSHAKE, actual);
         received.release();
 
-        assertEquals(1L, detectorContext.counters().direct().sum());
-        assertEquals(0L, detectorContext.counters().rejected().sum());
-        assertEquals(0L, detectorContext.counters().failures().sum(), "这条路径不应抛出任何异常");
+        assertEquals(1L, detectorContext.counters().direct());
+        assertEquals(0L, detectorContext.counters().rejected());
+        assertEquals(0L, detectorContext.counters().failures(), "这条路径不应抛出任何异常");
         channel.finishAndReleaseAll();
     }
 
@@ -212,17 +212,17 @@ class ProxyProtocolDetectorTest {
 
         assertNotNull(channel.pipeline().context(ProxyProtocolDetector.HANDLER_NAME), "探测器应当仍在管道里");
         assertNull(channel.readInbound(), "还不能下结论，字节应当停在缓冲区里");
-        assertEquals(0L, detectorContext.counters().direct().sum());
-        assertEquals(0L, detectorContext.counters().rejected().sum());
+        assertEquals(0L, detectorContext.counters().direct());
+        assertEquals(0L, detectorContext.counters().rejected());
 
         // 补上签名的剩余 8 个字节 → 凑齐完整的 PROXY v2 头，但 EmbeddedChannel 没有可信对端地址，于是被拒绝并关连接
         final byte[] rest = new byte[V2_SIGNATURE.length - 4];
         System.arraycopy(V2_SIGNATURE, 4, rest, 0, rest.length);
         channel.writeInbound(buffer(rest));
-        assertEquals(1L, detectorContext.counters().rejected().sum());
-        assertEquals(0L, detectorContext.counters().proxied().sum());
-        assertEquals(0L, detectorContext.counters().direct().sum(), "补全后是代理头，不应被计入直连");
-        assertEquals(0L, detectorContext.counters().failures().sum(), "这条路径不应抛出任何异常");
+        assertEquals(1L, detectorContext.counters().rejected());
+        assertEquals(0L, detectorContext.counters().proxied());
+        assertEquals(0L, detectorContext.counters().direct(), "补全后是代理头，不应被计入直连");
+        assertEquals(0L, detectorContext.counters().failures(), "这条路径不应抛出任何异常");
         assertFalse(channel.isOpen(), "被拒绝的连接必须关闭");
         channel.finishAndReleaseAll();
     }

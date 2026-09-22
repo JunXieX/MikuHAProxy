@@ -1,19 +1,11 @@
 # ===== 构建产物 =====
-build/
+# 本项目是纯 Maven 工程（Maven 只在 CI 里跑），产物目录是 target/
 target/
 out/
 *.jar
 *.war
 *.zip
 *.tar.gz
-
-# Gradle Wrapper 的 jar 属于构建工具本体，必须入库
-!gradle/wrapper/gradle-wrapper.jar
-
-# ===== 构建缓存 =====
-.gradle/
-gradle-app.setting
-.mvn/wrapper/maven-wrapper.jar
 
 # ===== IDE =====
 .idea/

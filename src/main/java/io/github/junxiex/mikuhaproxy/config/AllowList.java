@@ -74,19 +74,31 @@ public final class AllowList {
         }
         final byte[] raw = address.getAddress();
         if (raw.length == 4) {
-            return matches(ipv4, raw, 0);
+            // 同族、无偏移：直接用「整段比较」的那条重载
+            return matchesWhole(ipv4, raw);
         }
         if (isIpv4Mapped(raw)) {
             // 纯兜底分支：现实中一般拿不到这种形态——JDK 与 Netty 原生传输都会把
             // ::ffff:a.b.c.d 归一化成 Inet4Address（在 JDK 25 + Netty 4.2 上实测过）。
             // 但万一从别处拿到 16 字节的 IPv4-mapped 地址，按长度比较的 IPv4 规则就会失效，
             // 所以这里额外用后 4 个字节再比一次 IPv4 规则。
-            return matches(ipv4, raw, 12) || matches(ipv6, raw, 0);
+            return matchesFrom(ipv4, raw, 12) || matchesWhole(ipv6, raw);
         }
-        return matches(ipv6, raw, 0);
+        return matchesWhole(ipv6, raw);
     }
 
-    private static boolean matches(List<CidrBlock> rules, byte[] raw, int offset) {
+    /** 同族、无偏移的匹配：候选地址与规则长度一致，整段比较。 */
+    private static boolean matchesWhole(List<CidrBlock> rules, byte[] raw) {
+        for (int i = 0, n = rules.size(); i < n; i++) {
+            if (rules.get(i).contains(raw)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 带偏移的匹配：用于拿 IPv4-mapped IPv6 的后 4 个字节去撞 IPv4 规则。 */
+    private static boolean matchesFrom(List<CidrBlock> rules, byte[] raw, int offset) {
         for (int i = 0, n = rules.size(); i < n; i++) {
             if (rules.get(i).contains(raw, offset)) {
                 return true;
@@ -117,6 +129,11 @@ public final class AllowList {
      *
      * <p>单行写错<b>不会</b>让整个插件起不来：这里逐行容错，通过 {@code problem} 报告
      * 「第几行、什么内容、什么问题」，非法行跳过，其余照常生效。</p>
+     *
+     * <p><b>关于域名与 DNS</b>：域名条目会调用 {@link InetAddress#getAllByName(String)}，这是<b>阻塞</b>调用。
+     * 本方法在插件启动线程以及 {@code /mikuproxy reload} 的命令线程上执行，所以如果白名单里写了域名、
+     * 而 DNS 又不可达，这两处会各自卡住数秒（代理本身的连接处理不受影响）。只写 IP 字面量时，
+     * {@code InetAddress.getByName} 不会真正发起查询，也就没有这个开销。</p>
      *
      * @param file    白名单文件
      * @param problem 问题报告出口（通常是日志）

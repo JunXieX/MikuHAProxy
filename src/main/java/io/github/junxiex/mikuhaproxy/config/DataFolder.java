@@ -51,7 +51,12 @@ public final class DataFolder {
             return injected;
         }
         final Path desired = parent.resolve(NAME);
-        if (desired.equals(injected)) {
+        // 注意这里用的是「路径文本忽略大小写比较」，而不是 Path.equals 或 Files.isSameFile：
+        //  · Path.equals 在 Windows 上不区分大小写，但在 macOS（默认 APFS 不区分大小写）上**区分**，
+        //    于是 macOS 上会误判成「两个不同的目录」，接着走进「目标目录已存在」分支，把用户自己的
+        //    目录当成「旧目录」提示去手动合并再删除 —— 照做就等于删掉配置。
+        //  · Files.isSameFile 需要两侧都已存在，若注入目录还没建就会抛 NoSuchFileException。
+        if (desired.toString().equalsIgnoreCase(injected.toString())) {
             // 走这里说明文件系统不区分大小写（Windows / macOS 默认）：两个名字是同一个目录。
             if (!Files.isDirectory(injected)) {
                 // 目录还没建，直接按目标名返回，创建出来就是期望的大小写

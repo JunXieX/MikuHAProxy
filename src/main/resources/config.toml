@@ -20,6 +20,9 @@ allow-all-proxies = false
 # 白名单文件的路径。
 # 相对路径相对于插件数据目录（plugins/MikuHAProxy/）；也可以写绝对路径。
 # 文件格式见同目录下的 whitelist.conf。
+#
+# 白名单只决定「谁的 PROXY 头可以被采信」，它不限制直连：任何能连到代理端口的
+# 地址都仍然可以直连进来。如果你的代理端口对公网开放，请用防火墙单独控制直连来源。
 whitelist-file = "whitelist.conf"
 
 # 是否输出「代理连接被拒绝」与「判定过程发生异常」这两类日志。

@@ -58,10 +58,11 @@ public final class CidrBlock {
     }
 
     /**
-     * 判断候选地址是否落在本规则内。
+     * 判断候选地址是否落在本规则内（同族、无偏移的常规比较）。
      *
      * <p>要求候选地址与本规则<b>同族</b>（4 字节对 IPv4 规则、16 字节对 IPv6 规则）；
-     * 长度不一致直接不匹配，不做任何隐式转换。</p>
+     * 长度不一致直接不匹配，不做任何隐式转换。需要跨族取后几个字节比较时用
+     * {@link #contains(byte[], int)}。</p>
      *
      * @param candidate 原始地址字节
      */
@@ -72,8 +73,11 @@ public final class CidrBlock {
     /**
      * 判断候选地址从 {@code offset} 开始的 {@link #byteLength()} 个字节是否落在本规则内。
      *
-     * <p>{@code offset} 用于 IPv4-mapped IPv6（{@code ::ffff:a.b.c.d}）：直接拿后 4 个字节与
-     * IPv4 规则比较，不需要把地址重新包装成 {@code InetAddress}，也不需要复制数组。</p>
+     * <p>要求候选地址从 {@code offset} 起至少有 {@link #byteLength()} 个字节，否则直接不匹配，
+     * 不做任何隐式转换。</p>
+     *
+     * <p>{@code offset} 的典型用法是 IPv4-mapped IPv6（{@code ::ffff:a.b.c.d}）：直接拿后 4 个字节
+     * 与 IPv4 规则比较，不需要把地址重新包装成 {@code InetAddress}，也不需要复制数组。</p>
      *
      * @param offset 起始偏移；越界时安全返回 {@code false}，不抛异常
      */

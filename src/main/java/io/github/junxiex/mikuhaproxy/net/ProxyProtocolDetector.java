@@ -77,12 +77,19 @@ public final class ProxyProtocolDetector extends ByteToMessageDecoder {
         this.context = context;
     }
 
-    /** 只解一次：要么判定为直连，要么换上真正的解码器，不存在「继续解码后续帧」的语义。 */
-    @Override
-    public boolean isSingleDecode() {
-        return true;
-    }
-
+    /**
+     * 判定入口。
+     *
+     * <p><b>为什么不必覆写 {@code isSingleDecode()}</b>：那个开关只在本次 {@code decode} 向 {@code out}
+     * 产出过消息时才会被 Netty 读到（{@code ByteToMessageDecoder.callDecode} 的字节码路径），而本探测器
+     * 从不向 {@code out} 添加任何东西，覆写它等于写一段永远不会执行的代码。真正保证「只判定一次」的是：</p>
+     * <ul>
+     *   <li>直连：{@link #handleDirect} 把处理器自己摘出管道，Netty 随即停止调用它；</li>
+     *   <li>代理：缓冲字节交给新装上的 {@link HAProxyMessageDecoder}，本处理器已不在管道里；</li>
+     *   <li>字节不够：不消费、不产出，触发 Netty「{@code decode} 无进展即停止本次解码」这条规则；</li>
+     *   <li>外加 {@link #decided} 标记，兜住连接关闭时 Netty 对同一缓冲区重入 {@code callDecode} 的情况。</li>
+     * </ul>
+     */
     @Override
     protected void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) {
         if (decided) {
@@ -154,7 +161,7 @@ public final class ProxyProtocolDetector extends ByteToMessageDecoder {
 
     /** 直连：摘掉自己，让后续处理器按普通连接处理。 */
     private void handleDirect(ChannelHandlerContext ctx) {
-        context.counters().direct().increment();
+        context.counters().incrementDirect();
         // 按名字移除是 O(1)（Netty 内部维护 name -> context 的 HashMap），
         // 而 remove(ChannelHandler) 需要线性扫描整条管道。
         // 摘除发生在 decode() 内部，Netty 会把本处理器已缓冲的字节转发给后一个处理器
@@ -167,7 +174,7 @@ public final class ProxyProtocolDetector extends ByteToMessageDecoder {
         final InetAddress peer = peerAddress(ctx.channel());
 
         if (!context.allowList().isAllowed(peer)) {
-            context.counters().rejected().increment();
+            context.counters().incrementRejected();
             // 先关连接、再打日志：安全决策不能因为「打日志失败」而失效。
             ctx.close();
             if (context.settings().logRejectedConnections() && context.throttle().shouldLog(peer)) {
@@ -177,26 +184,34 @@ public final class ProxyProtocolDetector extends ByteToMessageDecoder {
             return;
         }
 
-        context.counters().proxied().increment();
+        context.counters().incrementProxied();
         if (context.settings().logAcceptedConnections()) {
             context.logger().info("已接受来自 {} 的 {} 代理头。", AddressFormat.format(peer), version);
         }
 
         final ChannelPipeline pipeline = ctx.pipeline();
         final String self = ctx.name();
-        final HAProxyMessageDecoder decoder = new HAProxyMessageDecoder();
         try {
-            // 同样按名字替换：O(1)，并且沿用 "haproxy-decoder" 这个既有命名
-            pipeline.replace(self, DECODER_NAME, decoder);
-        } catch (IllegalArgumentException duplicateName) {
-            // 管道里已经存在同名处理器（别的插件占了坑）：退回 Netty 自动命名，
-            // 保证连接不会因为重名而卡住。
-            pipeline.replace(self, null, decoder);
+            // 按名字替换：O(1)，并且沿用 "haproxy-decoder" 这个既有命名（别的插件认得它）。
+            pipeline.replace(self, DECODER_NAME, new HAProxyMessageDecoder());
+        } catch (RuntimeException collision) {
+            // 管道里已经存在同名处理器（别的插件占了坑）。这里必须换一个**新实例**：
+            // DefaultChannelPipeline.replace 是「先 checkMultiplicity(新处理器)、后 checkDuplicateName(新名字)」，
+            // 所以第一次 replace 在因重名抛错之前，就已经把那个解码器实例标记成「已经加入过」；
+            // HAProxyMessageDecoder 不是 @Sharable，复用同一个实例再替换一次必然抛 ChannelPipelineException。
+            // 重名抛的是 IllegalArgumentException，但复用实例抛的是 ChannelPipelineException（两者都是
+            // RuntimeException），所以这里按 RuntimeException 兜，才能真正保证「不会因为重名卡住这条连接」。
+            pipeline.replace(self, null, new HAProxyMessageDecoder());
         }
     }
 
     /**
      * 判定过程中出现异常：计数、按原有方式关掉这条连接。
+     *
+     * <p>这里收到的异常不止一种来源：既可能是本处理器判定失败（被 Netty 包成 {@code DecoderException}），
+     * 也可能是判定尚未完成时连接就被对端重置、由 {@code HeadContext} 沿入站方向穿过来的 socket 异常。
+     * 两者都发生在「连接初始化阶段」，处理方式也一样（关掉这条连接），所以共用一条日志——但文案刻意写成
+     * 「连接初始化（PROXY 判定）阶段」，免得把与判定无关的断开说成「判定出错」。</p>
      *
      * <p>日志同样受 {@code log-rejected-connections} 与限流器约束。这一点是刻意的：
      * 关掉日志开关的人要的是「安静」，而不是「安静一半」——攻击者同样能制造异常来刷日志，
@@ -205,10 +220,11 @@ public final class ProxyProtocolDetector extends ByteToMessageDecoder {
      */
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-        context.counters().failures().increment();
+        context.counters().incrementFailures();
         final InetAddress peer = peerAddress(ctx.channel());
         if (context.settings().logRejectedConnections() && context.throttle().shouldLog(peer)) {
-            context.logger().error("判定 PROXY protocol 时发生异常，已断开该连接（对端 {}）", AddressFormat.format(peer), cause);
+            context.logger().error("连接初始化（PROXY 判定）阶段发生异常，已断开该连接（对端 {}）",
+                    AddressFormat.format(peer), cause);
         }
         ctx.close();
     }

@@ -42,10 +42,12 @@ public final class ChannelHook {
     /** 只有当「配置说开了 proxy-protocol、管道里却没解码器」时才告警一次，避免日志刷屏。 */
     private final AtomicBoolean missingDecoderReported = new AtomicBoolean();
 
-    private Slot initializerSlot;
-    private Object holder;
-    private ChannelInitializer<Channel> originalInitializer;
-    private boolean installed;
+    // install() 跑在代理启动线程上，isInstalled()/uninstall() 可能由命令线程调用，所以这四个字段
+    // 必须是 volatile：否则命令线程可能读到 installed == false，从而把「已安装」误报成「未安装」。
+    private volatile Slot initializerSlot;
+    private volatile Object holder;
+    private volatile ChannelInitializer<Channel> originalInitializer;
+    private volatile boolean installed;
 
     public ChannelHook(ProxyServer server, Supplier<DetectorContext> contexts, Logger logger) {
         this.server = server;
@@ -83,7 +85,7 @@ public final class ChannelHook {
             final DetectingInitializer wrapper =
                     new DetectingInitializer(delegate, contexts, logger, proxyProtocolEnabled, missingDecoderReported);
 
-            logger.info("正在替换 Velocity 的连接初始化器（Velocity 自身会打印一条替换告警，可安全忽略）。");
+            logger.info("正在替换 Velocity 的连接初始化器；Velocity 不会为此打印任何告警，也无需重启。");
             slot.set(serverInitializerHolder, wrapper);
 
             this.holder = serverInitializerHolder;
@@ -296,7 +298,7 @@ public final class ChannelHook {
             try {
                 installDetector(channel, context);
             } catch (Throwable t) {
-                context.counters().failures().increment();
+                context.counters().incrementFailures();
                 if (injectionFailureReported.compareAndSet(false, true)) {
                     logger.error("为连接注入 PROXY protocol 探测器失败，该连接将按 Velocity 原有方式处理；"
                             + "后续同类失败只计入 /mikuproxy status 的「异常」计数。", t);
@@ -319,10 +321,10 @@ public final class ChannelHook {
                 // 万一其它插件也在首位插了处理器，才退化为一次按类型线性查找。
                 final ChannelHandler byType = pipeline.get(HAProxyMessageDecoder.class);
                 if (byType == null) {
-                    context.counters().notInjected().increment();
+                    context.counters().incrementNotInjected();
                     if (proxyProtocolExpected && missingDecoderReported.compareAndSet(false, true)) {
-                        logger.warn("velocity.toml 里启用了 proxy-protocol，但管道的首位没有 PROXY 解码器；"
-                                + "如果本行反复出现请反馈该问题。");
+                        logger.warn("velocity.toml 里启用了 proxy-protocol，但整条管道里都没有 PROXY 解码器"
+                                + "（探测器因此没有注入）；如果本行反复出现请反馈该问题。");
                     }
                     return;
                 }

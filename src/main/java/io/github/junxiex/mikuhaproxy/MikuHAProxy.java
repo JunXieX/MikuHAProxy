@@ -21,6 +21,7 @@ import org.slf4j.Logger;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
@@ -51,10 +52,11 @@ public final class MikuHAProxy {
     /**
      * 版本号。
      *
-     * <p>同时出现在 {@code @Plugin} 注解、{@code velocity-plugin.json} 与 {@code pom.xml} 里，
-     * 改动时请三处同步。</p>
+     * <p>它会进入 {@code @Plugin} 注解与编译期生成的 {@code velocity-plugin.json}；{@code pom.xml} 里的
+     * 版本号必须与它一致，这条一致性由 {@code VersionTest} 守护。另外 {@code README.md} 的版本行与安装
+     * 步骤里的 jar 名也写着版本号，那两处没有自动化守护，改版本时需要手工同步。</p>
      */
-    public static final String VERSION = "1.0.1";
+    public static final String VERSION = "1.0.2-Beta";
 
     /**
      * 重载时最多在聊天框里回显多少条配置问题。
@@ -188,7 +190,7 @@ public final class MikuHAProxy {
             return false;
         }
 
-        final Path whitelistFile = resolveWhitelistFile(config);
+        final Path whitelistFile = resolveWhitelistFile(config, problems);
         if (writeDefaults) {
             writeDefaultResource("whitelist.conf", whitelistFile);
         }
@@ -210,8 +212,27 @@ public final class MikuHAProxy {
         return true;
     }
 
-    private Path resolveWhitelistFile(PluginConfig config) {
-        final Path configured = Path.of(config.whitelistFile());
+    /**
+     * 解析白名单文件路径。
+     *
+     * <p>{@link Path#of(String, String...)} 在 Windows 上遇到 {@code < > : " | ? *} 这类字符，
+     * 或者写成保留设备名（{@code CON}、{@code NUL} 等），会抛 {@link InvalidPathException}。
+     * 这是 unchecked 异常：放任它冒出去，启动时只会在日志里留下一条笼统的堆栈，reload 时则直接让命令失败——
+     * 而本插件对外的承诺是「任何写法错误都能被精确报告，并且不会让插件加载失败」。所以这里自己兜住，
+     * 报出问题并回退到默认文件名。</p>
+     *
+     * @param problems 配置问题出口
+     */
+    private Path resolveWhitelistFile(PluginConfig config, List<String> problems) {
+        final Path configured;
+        try {
+            configured = Path.of(config.whitelistFile());
+        } catch (InvalidPathException e) {
+            final String fallback = PluginConfig.defaults().whitelistFile();
+            problems.add("config.toml：whitelist-file 不是合法路径（「" + config.whitelistFile() + "」："
+                    + e.getReason() + "），已改用默认值 " + fallback);
+            return dataDirectory.resolve(fallback);
+        }
         return configured.isAbsolute() ? configured : dataDirectory.resolve(configured);
     }
 
@@ -280,11 +301,11 @@ public final class MikuHAProxy {
                 + "</white> <dark_gray>(" + snapshot.allowList().size() + " 条规则)</dark_gray>");
         source.sendRichMessage("<gray>拒绝日志限流：</gray><white>同地址每 "
                 + snapshot.settings().rejectedLogIntervalSeconds() + " 秒最多一条</white>");
-        source.sendRichMessage("<gray>连接计数：</gray><white>直连 " + counters.direct().sum()
-                + " · 代理 " + counters.proxied().sum()
-                + " · 拒绝 " + counters.rejected().sum()
-                + " · 未注入 " + counters.notInjected().sum()
-                + " · 异常 " + counters.failures().sum() + "</white>");
+        source.sendRichMessage("<gray>连接计数：</gray><white>直连 " + counters.direct()
+                + " · 代理 " + counters.proxied()
+                + " · 拒绝 " + counters.rejected()
+                + " · 未注入 " + counters.notInjected()
+                + " · 异常 " + counters.failures() + "</white>");
         source.sendRichMessage("<gray>已运行：</gray><white>" + formatUptime() + "</white>");
     }
 
