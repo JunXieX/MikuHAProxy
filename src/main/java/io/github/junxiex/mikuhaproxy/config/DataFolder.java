@@ -51,17 +51,9 @@ public final class DataFolder {
             return injected;
         }
         final Path desired = parent.resolve(NAME);
-        // 注意这里用的是「路径文本忽略大小写比较」，而不是 Path.equals 或 Files.isSameFile：
-        //  · Path.equals 在 Windows 上不区分大小写，但在 macOS（默认 APFS 不区分大小写）上**区分**，
-        //    于是 macOS 上会误判成「两个不同的目录」，接着走进「目标目录已存在」分支，把用户自己的
-        //    目录当成「旧目录」提示去手动合并再删除 —— 照做就等于删掉配置。
-        //  · Files.isSameFile 需要两侧都已存在，若注入目录还没建就会抛 NoSuchFileException。
-        if (desired.toString().equalsIgnoreCase(injected.toString())) {
-            // 走这里说明文件系统不区分大小写（Windows / macOS 默认）：两个名字是同一个目录。
-            if (!Files.isDirectory(injected)) {
-                // 目录还没建，直接按目标名返回，创建出来就是期望的大小写
-                return desired;
-            }
+        if (isSameDirectory(injected, desired)) {
+            // 走这里说明文件系统不区分大小写（Windows / macOS 默认）：两个名字是同一个目录，
+            // 但磁盘上记录的仍是旧的大小写，需要「中间名」两步掰正。
             renameCaseInPlace(injected, info, warn);
             return injected;
         }
@@ -128,6 +120,33 @@ public final class DataFolder {
                 warn.accept("更正数据目录名失败（" + e + "），且还原也失败了（" + rollbackFailure + "）。"
                         + "你的配置目前在 " + staging + "，请手动把它改名为 " + NAME + "。");
             }
+        }
+    }
+
+    /**
+     * 判断两个路径是否指向同一个已存在的目录。
+     *
+     * <p>这里必须<b>问文件系统</b>，两种「看起来能用」的比较方式都会在某个平台上出错：</p>
+     * <ul>
+     *   <li>{@link Path#equals}：Windows 上按不区分大小写比较（对），但 macOS（默认 APFS 不区分大小写）
+     *       上却按区分比较 —— 于是同一个目录被判成两个，接着走进「目标目录已存在」分支，把用户自己的
+     *       目录当成「旧目录」提示去手动合并再删除，照做就等于删掉配置 ✗</li>
+     *   <li>字符串 {@code equalsIgnoreCase}：反过来，它会把 Linux 上两个真正不同的目录判成同一个，
+     *       于是该重命名的目录不会被重命名（CI 上就是这么暴露出来的）✗</li>
+     * </ul>
+     *
+     * <p>{@link Files#isSameFile} 比的是文件本身（fileKey / inode），跨平台语义一致。两侧必须都存在；
+     * 有一侧不存在时返回 {@code false}（还没建出来的目录谈不上「同一个」）。</p>
+     */
+    private static boolean isSameDirectory(Path a, Path b) {
+        if (!Files.exists(a) || !Files.exists(b)) {
+            return false;
+        }
+        try {
+            return Files.isSameFile(a, b);
+        } catch (IOException e) {
+            // 判断不了就当「不是同一个」：后续分支会保守地以目标目录为准，不会动用户的文件
+            return false;
         }
     }
 
