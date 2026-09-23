@@ -56,7 +56,7 @@ public final class MikuHAProxy {
      * 版本号必须与它一致，这条一致性由 {@code VersionTest} 守护。另外 {@code README.md} 的版本行与安装
      * 步骤里的 jar 名也写着版本号，那两处没有自动化守护，改版本时需要手工同步。</p>
      */
-    public static final String VERSION = "1.1.1-Beta";
+    public static final String VERSION = "1.2.0";
 
     /**
      * 重载时最多在聊天框里回显多少条配置问题。
