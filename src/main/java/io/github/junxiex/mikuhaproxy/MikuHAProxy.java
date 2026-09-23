@@ -33,7 +33,7 @@ import java.util.function.Consumer;
 /**
  * MikuHAProxy —— 让 Velocity 同时接受代理（HAProxy PROXY protocol）与直连。
  *
- * <p>Velocity 开启 {@code proxy-protocol} 后只认带 PROXY 头的连接，本插件在管道首位放一个
+ * <p>Velocity 开启 {@code haproxy-protocol} 后只认带 PROXY 头的连接，本插件在管道首位放一个
  * 「先看一眼」的探测器，据开头的字节决定这条连接该走代理路径还是直连路径。行为细节请见 README。</p>
  *
  * <p>核心安全模型（不可省略）：只允许<b>可信来源</b>发来的 PROXY 头生效。
@@ -56,7 +56,7 @@ public final class MikuHAProxy {
      * 版本号必须与它一致，这条一致性由 {@code VersionTest} 守护。另外 {@code README.md} 的版本行与安装
      * 步骤里的 jar 名也写着版本号，那两处没有自动化守护，改版本时需要手工同步。</p>
      */
-    public static final String VERSION = "1.1.0";
+    public static final String VERSION = "1.1.1-Beta";
 
     /**
      * 重载时最多在聊天框里回显多少条配置问题。
@@ -273,11 +273,11 @@ public final class MikuHAProxy {
         logger.info("MikuHAProxy {} 已启用（作者 JunXieX）。", VERSION);
         if (Boolean.FALSE.equals(enabled)) {
             logger.error("!!! ==========================================================");
-            logger.error("!!! velocity.toml 里没有启用 proxy-protocol，插件目前不会起作用。");
-            logger.error("!!! 请在 velocity.toml 中设置 proxy-protocol = true 后重启代理。");
+            logger.error("!!! velocity.toml 里没有启用 haproxy-protocol，插件目前不会起作用。");
+            logger.error("!!! 请在 velocity.toml 中设置 haproxy-protocol = true 后重启代理。");
             logger.error("!!! ==========================================================");
         } else if (enabled == null) {
-            logger.info("无法读取 velocity.toml 的 proxy-protocol 开关；若代理连接不可用请检查该配置项。");
+            logger.info("无法读取 velocity.toml 的 haproxy-protocol 开关；若代理连接不可用请检查该配置项。");
         }
         logger.info("白名单：{}，规则 {} 条。可用 /mikuproxy status 查看详情。", snapshot.allowList(), snapshot.allowList().size());
     }
@@ -296,7 +296,7 @@ public final class MikuHAProxy {
         source.sendRichMessage("<gradient:#7bd7ff:#a88bff><b>MikuHAProxy</b></gradient> <gray>v" + VERSION
                 + " · 作者 JunXieX</gray>");
         source.sendRichMessage("<gray>管道注入：</gray>" + (hook.isInstalled() ? "<green>已安装</green>" : "<red>未安装</red>"));
-        source.sendRichMessage("<gray>velocity.toml 的 proxy-protocol：</gray>" + proxyProtocolState(enabled));
+        source.sendRichMessage("<gray>velocity.toml 的 haproxy-protocol：</gray>" + proxyProtocolState(enabled));
         source.sendRichMessage("<gray>白名单：</gray><white>" + esc(snapshot.allowList().toString())
                 + "</white> <dark_gray>(" + snapshot.allowList().size() + " 条规则)</dark_gray>");
         source.sendRichMessage("<gray>拒绝日志限流：</gray><white>同地址每 "

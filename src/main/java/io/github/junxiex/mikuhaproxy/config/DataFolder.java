@@ -18,8 +18,9 @@ import java.util.function.Consumer;
  * <ul>
  *   <li><b>区分大小写</b>（Linux 常见）：旧名字是另一个目录，直接整体重命名——同分区下是单个
  *       原子操作，要么全部成功要么完全没动。</li>
- *   <li><b>不区分大小写</b>（Windows / macOS 默认）：两个名字<b>本来就是同一个目录</b>，直接
- *       rename 不会改变磁盘上记录的大小写，于是用「改成中间名 → 再改成目标名」两步来掰正。</li>
+     *   <li><b>不区分大小写</b>（Windows / macOS 默认）：两个名字<b>本来就是同一个目录</b>，直接
+     *       rename 不会改变磁盘上记录的大小写，于是用「改成中间名 → 再改成目标名」两步来掰正。
+     *       磁盘上已是目标名时按真实文件名判断、直接跳过，不再做无谓的 move 与日志。</li>
  * </ul>
  *
  * <p>所有失败路径都回退到「继续使用原目录」并给出告警：绝不会出现「配置已搬到新目录、插件却去读旧目录」
@@ -52,8 +53,8 @@ public final class DataFolder {
         }
         final Path desired = parent.resolve(NAME);
         if (isSameDirectory(injected, desired)) {
-            // 走这里说明文件系统不区分大小写（Windows / macOS 默认）：两个名字是同一个目录，
-            // 但磁盘上记录的仍是旧的大小写，需要「中间名」两步掰正。
+            // 走这里说明文件系统不区分大小写（Windows / macOS 默认）：两个名字是同一个目录。
+            // 但磁盘上记录的大小写未必已是目标名，交给 renameCaseInPlace 按真实文件名判断（必要时才掰正）。
             renameCaseInPlace(injected, info, warn);
             return injected;
         }
@@ -84,14 +85,51 @@ public final class DataFolder {
     }
 
     /**
-     * 目录名只有大小写不同时，把它掰正。
+     * 读取目录在磁盘上的真实名字（大小写以文件系统为准）。
+     *
+     * <p>抽成可注入的接口，是为了能在<b>大小写敏感</b>的 CI（Linux）上模拟「注入的是小写路径、磁盘上却是
+     * 目标大小写」这一 Windows / macOS 场景：那种目录在 Linux 上根本不存在，{@link Path#toRealPath()}
+     * 会直接抛 {@code NoSuchFileException}，用真实文件系统测不出这条路径。生产路径注入 {@link #realNameOf}。</p>
+     */
+    @FunctionalInterface
+    interface RealNameReader {
+        String read(Path directory) throws IOException;
+    }
+
+    /** 生产用的真实名读取：{@link Path#toRealPath()} 在 Windows / macOS 上返回磁盘记录的真实大小写。 */
+    private static String realNameOf(Path directory) throws IOException {
+        return directory.toRealPath().getFileName().toString();
+    }
+
+    /** 目录名只有大小写不同时把它掰正；生产入口，用 {@link #realNameOf} 读真实名。 */
+    private static void renameCaseInPlace(Path directory, Consumer<String> info, Consumer<String> warn) {
+        renameCaseInPlace(directory, info, warn, DataFolder::realNameOf);
+    }
+
+    /**
+     * 目录名只有大小写不同时，把它掰正（真实名读取器可注入，便于测试脱离平台差异覆盖判定逻辑）。
      *
      * <p>不区分大小写的文件系统上，直接 {@code rename("mikuhaproxy" → "MikuHAProxy")} 既不报错、
      * 也不会改变磁盘上记录的大小写，所以这里先改成中间名、再改成目标名。</p>
+     *
+     * <p><b>必须问文件系统要真实文件名</b>：{@code directory} 是 Velocity 用插件 id 拼出来的路径字符串
+     * （恒为小写 {@code mikuhaproxy}），它的大小写与<b>磁盘上记录</b>的大小写无关。早先直接比对
+     * {@code directory.getFileName()}，于是「磁盘上已经是 {@value #NAME}」也永远判为「不一致」，每次启动
+     * 都白做一轮两次 move 并打一行日志（第二步若失败，目录还会卡在中间名上）。改读真实名后，磁盘上已经是
+     * 目标名就直接返回，不打日志、不做任何 move。</p>
      */
-    private static void renameCaseInPlace(Path directory, Consumer<String> info, Consumer<String> warn) {
-        final String actual = directory.getFileName().toString();
+    static void renameCaseInPlace(Path directory, Consumer<String> info, Consumer<String> warn,
+                                  RealNameReader realNameReader) {
+        final String actual;
+        try {
+            actual = realNameReader.read(directory);
+        } catch (IOException e) {
+            warn.accept("无法读取数据目录 " + directory + " 的真实名称（" + e + "），已跳过改名；"
+                    + "配置与白名单不受影响。");
+            return;
+        }
         if (actual.equals(NAME)) {
+            // 磁盘上已经是目标大小写：什么都不做，也不打任何日志
             return;
         }
         final Path target = directory.resolveSibling(NAME);

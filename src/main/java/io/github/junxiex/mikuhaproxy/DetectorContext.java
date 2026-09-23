@@ -17,7 +17,8 @@ import org.slf4j.Logger;
  * @param allowList 允许的代理来源
  * @param settings  当前配置
  * @param counters  全局计数器（跨快照复用，重载不清零）
- * @param throttle  拒绝 / 异常日志限流器（每次重载按新配置重建，因此重载后新建的连接使用新限流参数）
+ * @param throttle  拒绝 / 判定失败 / 连接中断三类日志的限流器（各分类独立分槽，互不挤占；
+ *                  每次重载按新配置重建，因此重载后新建的连接使用新限流参数）
  * @param logger    插件日志
  */
 public record DetectorContext(

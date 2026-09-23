@@ -20,7 +20,7 @@ import java.util.function.Supplier;
 /**
  * 把探测器挂进 Velocity 的连接初始化流程。
  *
- * <p>Velocity 在启用 {@code proxy-protocol} 时，会在每条新连接的管道最前面放一个
+ * <p>Velocity 在启用 {@code haproxy-protocol} 时，会在每条新连接的管道最前面放一个
  * {@link HAProxyMessageDecoder}——它的前提是「每条连接都带 PROXY 头」，因此直连会被它直接掐掉。
  * 本插件要在不修改 Velocity 的前提下，把这个解码器换成会「先看一眼」的探测器，唯一的介入点是
  * 包一层 {@code ServerChannelInitializer}。</p>
@@ -39,7 +39,7 @@ public final class ChannelHook {
     private final Supplier<DetectorContext> contexts;
     private final Logger logger;
 
-    /** 只有当「配置说开了 proxy-protocol、管道里却没解码器」时才告警一次，避免日志刷屏。 */
+    /** 只有当「配置说开了 haproxy-protocol、管道里却没解码器」时才告警一次，避免日志刷屏。 */
     private final AtomicBoolean missingDecoderReported = new AtomicBoolean();
 
     // install() 跑在代理启动线程上，isInstalled()/uninstall() 可能由命令线程调用，所以这四个字段
@@ -124,7 +124,7 @@ public final class ChannelHook {
     }
 
     /**
-     * 软读取 Velocity 的 {@code proxy-protocol} 开关。
+     * 软读取 Velocity 的 {@code haproxy-protocol} 开关。
      *
      * <p>Velocity 4.0 的 API 接口 {@code ProxyConfig} 并没有暴露它（只有实现的
      * {@code VelocityConfiguration} 有 {@code isProxyProtocol()}），所以只能反射尝试；
@@ -323,7 +323,7 @@ public final class ChannelHook {
                 if (byType == null) {
                     context.counters().incrementNotInjected();
                     if (proxyProtocolExpected && missingDecoderReported.compareAndSet(false, true)) {
-                        logger.warn("velocity.toml 里启用了 proxy-protocol，但整条管道里都没有 PROXY 解码器"
+                        logger.warn("velocity.toml 里启用了 haproxy-protocol，但整条管道里都没有 PROXY 解码器"
                                 + "（探测器因此没有注入）；如果本行反复出现请反馈该问题。");
                     }
                     return;

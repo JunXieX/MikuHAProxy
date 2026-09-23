@@ -119,4 +119,19 @@ class LogThrottleTest {
 
         assertTrue(throttle.shouldLog(peer), "超过窗口后应当重新放行");
     }
+
+    @Test
+    @DisplayName("分类分槽：同一地址的不同分类互不挤占（否则噪音会盖掉安全信号）")
+    void categoriesHaveIndependentSlots() throws Exception {
+        final LogThrottle throttle = new LogThrottle(3600, 256);
+        final InetAddress peer = address("203.0.113.7");
+
+        assertTrue(throttle.shouldLog(peer, LogThrottle.CATEGORY_INTERRUPTION));
+        assertFalse(throttle.shouldLog(peer, LogThrottle.CATEGORY_INTERRUPTION), "中断分类自身仍限流");
+
+        // 中断占满了自己的槽，但绝不能影响信号分类 —— 否则攻击者能用中断噪音把判定失败的日志挤掉
+        assertTrue(throttle.shouldLog(peer), "信号分类应独立于中断分类");
+        assertFalse(throttle.shouldLog(peer), "信号分类自身仍然限流");
+        assertEquals(2, throttle.tracked(), "两个分类各占一个槽位");
+    }
 }

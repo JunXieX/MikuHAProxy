@@ -2,6 +2,7 @@ package io.github.junxiex.mikuhaproxy.net;
 
 import io.github.junxiex.mikuhaproxy.DetectorContext;
 import io.github.junxiex.mikuhaproxy.util.AddressFormat;
+import io.github.junxiex.mikuhaproxy.util.LogThrottle;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
@@ -10,8 +11,10 @@ import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.codec.ProtocolDetectionResult;
 import io.netty.handler.codec.ProtocolDetectionState;
 import io.netty.handler.codec.haproxy.HAProxyMessageDecoder;
+import io.netty.handler.codec.haproxy.HAProxyProtocolException;
 import io.netty.handler.codec.haproxy.HAProxyProtocolVersion;
 
+import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -206,27 +209,95 @@ public final class ProxyProtocolDetector extends ByteToMessageDecoder {
     }
 
     /**
-     * 判定过程中出现异常：计数、按原有方式关掉这条连接。
+     * 判定过程中出现异常：把「连接层中断」与「判定本身失败」分开处置，再关掉这条连接。
      *
-     * <p>这里收到的异常不止一种来源：既可能是本处理器判定失败（被 Netty 包成 {@code DecoderException}），
-     * 也可能是判定尚未完成时连接就被对端重置、由 {@code HeadContext} 沿入站方向穿过来的 socket 异常。
-     * 两者都发生在「连接初始化阶段」，处理方式也一样（关掉这条连接），所以共用一条日志——但文案刻意写成
-     * 「连接初始化（PROXY 判定）阶段」，免得把与判定无关的断开说成「判定出错」。</p>
+     * <p>这里收到的异常有两种来源，处置方式<b>刻意不同</b>：</p>
+     * <ul>
+     *   <li><b>连接层中断</b>（{@link IOException} 族，最常见的 {@code Connection reset}、
+     *       {@code Broken pipe}，以及 Windows 上的 {@code An existing connection was forcibly closed}）：
+     *       这类异常在 socket 读取路径上抛出（{@code implRead → doReadBytes}），{@code decode} 根本没被
+     *       调用，谈不上「判定失败」。它通常是对端在发出任何数据前就 RST 掉连接——扫描器探测、客户端取消、
+     *       探活——属于正常网络现象。因此<b>不计入</b>「异常」计数，日志降级为 DEBUG 且<b>不带堆栈</b>：
+     *       只有真正需要关注的事件才配得上 {@code /mikuproxy status} 的「异常」计数与 ERROR 级日志。</li>
+     *   <li><b>判定本身失败</b>（{@link HAProxyProtocolException}，以及 Netty 把它包起来的
+     *       {@code DecoderException}）：说明有人在构造畸形的 PROXY 头，是值得警觉的安全信号，
+     *       保持原有的计数与 ERROR + 堆栈。</li>
+     * </ul>
      *
-     * <p>日志同样受 {@code log-rejected-connections} 与限流器约束。这一点是刻意的：
-     * 关掉日志开关的人要的是「安静」，而不是「安静一半」——攻击者同样能制造异常来刷日志，
-     * 只留一条漏网的日志通道等于给了它绕过限流的后门。异常数量始终能在
-     * {@code /mikuproxy status} 的「异常」计数里看到，静默不等于失明。</p>
+     * <p><b>为什么降级后仍受 {@code log-rejected-connections} 与限流器约束</b>：这是刻意的，也是底线。
+     * 攻击者同样能用「异常」刷日志——若因为降级就放开限流，等于给攻击者开了一条无上限写日志的通道。
+     * 降级只是把噪音从 ERROR 挪到 DEBUG，防线本身一寸都没退。默认关闭 DEBUG 时连这一行都不会产生，
+     * 而「发生了多少次连接中断」对使用者没有诊断价值，故也刻意不新增计数器。</p>
+     *
+     * <p><b>两类日志分槽限流</b>：中断用 {@link LogThrottle#CATEGORY_INTERRUPTION}、判定失败用默认的
+     * {@link LogThrottle#CATEGORY_SIGNAL}，二者是同一地址下的两个独立槽位。否则攻击者只要用自己的 IP 先发
+     * 一次中断、占掉该地址的限流槽，就能在时间窗内把随后那条「伪造 PROXY 头」的 ERROR 一并挤掉——真实攻击
+     * 信号被自己制造的噪音盖住。</p>
      */
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-        context.counters().incrementFailures();
         final InetAddress peer = peerAddress(ctx.channel());
-        if (context.settings().logRejectedConnections() && context.throttle().shouldLog(peer)) {
-            context.logger().error("连接初始化（PROXY 判定）阶段发生异常，已断开该连接（对端 {}）",
-                    AddressFormat.format(peer), cause);
+        if (isConnectionInterruption(cause)) {
+            if (context.settings().logRejectedConnections()
+                    && context.throttle().shouldLog(peer, LogThrottle.CATEGORY_INTERRUPTION)) {
+                context.logger().debug("连接在完成 PROXY 判定前被对端中断（对端 {}）：{}",
+                        AddressFormat.format(peer), cause.toString());
+            }
+        } else {
+            context.counters().incrementFailures();
+            if (context.settings().logRejectedConnections() && context.throttle().shouldLog(peer)) {
+                context.logger().error("连接初始化（PROXY 判定）阶段发生异常，已断开该连接（对端 {}）",
+                        AddressFormat.format(peer), cause);
+            }
         }
+        // 连接中断时这条连接本就已断，这里再关一次是幂等的；仍统一关闭，保证两条路径收尾一致。
         ctx.close();
+    }
+
+    /**
+     * 沿 cause 链向下遍历的最大层数。
+     *
+     * <p>真实的异常链不过三五层（Netty 最多再用 {@code DecoderException} 包一层），16 层已是极高余量。
+     * 设上限是为了兜住「异常链被构造得极深」的意外输入：定长遍历在热路径上零分配，又不会无限往下钻。
+     * （不能靠「{@code t == t.getCause()} 就停」来防环——{@code Throwable.getCause()} 对
+     * {@code cause == this} 哨兵返回的是 {@code null}，而 {@code initCause(this)} 会抛
+     * {@code IllegalArgumentException}，自引用链根本构造不出来，那种写法是死代码。）</p>
+     */
+    private static final int MAX_CAUSE_DEPTH = 16;
+
+    /**
+     * 判断一个异常是否属于「连接层中断」。
+     *
+     * <p>分类只依据<b>异常类型</b>，不匹配异常消息文本——消息在不同 JDK / 平台上并不稳定
+     * （同样是重置，Windows 与 Linux 的措辞就不同），而类型是稳定的。{@link IOException} 及其子类
+     * （{@code SocketException}、{@code ClosedChannelException} 等）在本处理器的判定逻辑里不会产生；
+     * 沿入站方向能到达这里的 {@link IOException} 只可能来自 socket 读写路径，因此命中即代表「连接断了」
+     * 而非「判定错了」。</p>
+     *
+     * <p>沿因果链遍历时优先找 {@link HAProxyProtocolException}：它在 Netty 里会被 {@code DecoderException}
+     * 包一层，但只要出现就一律判为「判定失败」（宁可多报，不可漏报）。找不到它、却找到 {@link IOException}
+     * 才算连接中断；两者都没有的意外异常保守地按「判定失败」处理，以免真实故障被静默吞掉。</p>
+     *
+     * <p>遍历最深只到 {@link #MAX_CAUSE_DEPTH} 层。若因触顶而<b>没走完整条链</b>，一律保守判为「判定失败」——
+     * 方向永远是「宁可把噪音当信号，也不可把信号当噪音」：多打一条 ERROR 只是噪音，漏报一次伪造的
+     * PROXY 头才是真的损失。</p>
+     */
+    static boolean isConnectionInterruption(Throwable cause) {
+        boolean ioFailure = false;
+        Throwable t = cause;
+        for (int depth = 0; t != null && depth < MAX_CAUSE_DEPTH; depth++) {
+            if (t instanceof HAProxyProtocolException) {
+                return false;
+            }
+            if (t instanceof IOException) {
+                ioFailure = true;
+            }
+            t = t.getCause();
+        }
+        // 到这里有两种可能：链已走完（t == null），或触及 MAX_CAUSE_DEPTH 被截断（t != null）。
+        // 截断说明还有更深的层级没看，此时一律保守判为「判定失败」，不沿用中途记下的 ioFailure——
+        // 否则「前 16 层是 IOException、真信号在第 17 层」这种链会被降级成噪音，恰恰抹掉了攻击证据。
+        return t == null && ioFailure;
     }
 
     private static InetAddress peerAddress(Channel channel) {

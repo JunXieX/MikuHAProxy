@@ -134,6 +134,11 @@ class DataFolderTest {
         assertEquals(desired, result);
         assertTrue(notices.info.isEmpty(), notices.info.toString());
         assertTrue(notices.warn.isEmpty(), notices.warn.toString());
+        // 强化为「幂等」断言：这条用例在大小写敏感与不敏感的文件系统上都会执行（不带 assume），
+        // 因此在 Linux（CI）上也能覆盖 renameCaseInPlace 的早返回分支（注入 seam 的用例是另一处覆盖）。
+        assertEquals(DataFolder.NAME, onlyEntryName(plugins), "名字已正确时不得做任何 move");
+        assertEquals("127.0.0.0/8\n",
+                Files.readString(result.resolve("whitelist.conf"), StandardCharsets.UTF_8), "内容必须原样保留");
     }
 
     @Test
@@ -197,5 +202,48 @@ class DataFolderTest {
         assertEquals(relative, resolve(relative, notices));
         assertTrue(notices.info.isEmpty());
         assertTrue(notices.warn.isEmpty());
+    }
+
+    @Test
+    @DisplayName("不区分大小写：磁盘上已是目标名时，即便注入路径是小写也不 rename、不打印")
+    void alreadyCorrectOnDiskIsNoOpEvenWhenInjectedPathIsLowercase(@TempDir Path plugins) throws IOException {
+        assumeFalse(caseSensitive(plugins), "本用例需要不区分大小写的文件系统");
+
+        // 磁盘上已经是目标大小写（这正是上次启动掰正后的状态）
+        final Path desired = plugins.resolve(DataFolder.NAME);
+        Files.createDirectories(desired);
+        Files.writeString(desired.resolve("whitelist.conf"), "127.0.0.0/8\n", StandardCharsets.UTF_8);
+        assertEquals(DataFolder.NAME, onlyEntryName(plugins));
+
+        final Notices notices = new Notices();
+        // 模拟 Velocity 注入的小写路径 —— 恒为小写，正是「每次启动都白改名并打日志」的根因
+        final Path result = resolve(plugins.resolve("mikuhaproxy"), notices);
+
+        assertTrue(notices.info.isEmpty(), "磁盘名已正确时不得打印改名日志：" + notices.info);
+        assertTrue(notices.warn.isEmpty(), notices.warn.toString());
+        assertEquals(DataFolder.NAME, onlyEntryName(plugins), "不得做任何 move");
+        assertEquals("127.0.0.0/8\n", Files.readString(result.resolve("whitelist.conf"), StandardCharsets.UTF_8));
+    }
+
+    @Test
+    @DisplayName("注入 seam：磁盘真实名已是目标名时，无论平台/注入路径如何都不 rename、不打印（CI 全平台可跑）")
+    void realNameAlreadyTargetIsNoOpWithInjectedReader(@TempDir Path plugins) throws IOException {
+        final Path desired = plugins.resolve(DataFolder.NAME);
+        Files.createDirectories(desired);
+        Files.writeString(desired.resolve("whitelist.conf"), "127.0.0.0/8\n", StandardCharsets.UTF_8);
+        assertEquals(DataFolder.NAME, onlyEntryName(plugins));
+
+        final Notices notices = new Notices();
+        // 注入 fake：无论平台、无论传入什么路径，都报告「磁盘真实名 == MikuHAProxy」。这正是 Windows/macOS
+        // 上「注入小写路径、磁盘已是目标大小写」的场景 —— 在大小写敏感的 Linux CI 上，该目录根本不存在，
+        // 用真实文件系统复现不出（toRealPath() 会抛 NoSuchFileException），只能靠这个 seam 覆盖。
+        DataFolder.renameCaseInPlace(plugins.resolve("mikuhaproxy"), notices.info::add, notices.warn::add,
+                directory -> DataFolder.NAME);
+
+        assertTrue(notices.info.isEmpty(), "磁盘真实名已是目标名时不得打印改名日志：" + notices.info);
+        assertTrue(notices.warn.isEmpty(), notices.warn.toString());
+        assertEquals(DataFolder.NAME, onlyEntryName(plugins), "不得做任何 move（父目录仍只有一项且名字不变）");
+        assertEquals("127.0.0.0/8\n", Files.readString(desired.resolve("whitelist.conf"), StandardCharsets.UTF_8),
+                "文件内容必须原样可读");
     }
 }

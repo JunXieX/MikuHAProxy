@@ -39,7 +39,7 @@ public final class Counters {
      * 连接初始化时管道里<b>找不到</b> PROXY 解码器，探测器因此根本没被注入。
      *
      * <p>判定发生在<b>任何判定之前</b>：该连接原样交给 Velocity 原有的处理器处理。
-     * 绝大多数情况意味着 {@code velocity.toml} 没开 {@code proxy-protocol}。
+     * 绝大多数情况意味着 {@code velocity.toml} 没开 {@code haproxy-protocol}。
      * 注意这里说的是「整条管道」，不是「管道首位」——别的插件抢先占住首位时，插件仍会退化为
      * 按类型线性查找并把探测器装上，不会走到这条计数上。</p>
      */
@@ -47,7 +47,14 @@ public final class Counters {
         notInjected.increment();
     }
 
-    /** 判定阶段抛出异常、或注入失败的连接数。 */
+    /**
+     * 判定<b>本身</b>失败（如构造畸形的 PROXY 头被 {@code HAProxyProtocolException} 拒绝）、
+     * 或探测器注入失败的连接数。
+     *
+     * <p>刻意<b>不含</b>「连接层中断」：对端在判定完成前 RST / 主动关闭连接（扫描器探测、客户端取消、
+     * 探活）只会抛 socket 层的 {@code IOException}，判定逻辑根本还没跑，不属于需要关注的事件。
+     * 把它计入只会污染「异常」计数、让真正的安全信号被淹没。</p>
+     */
     public void incrementFailures() {
         failures.increment();
     }
