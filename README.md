@@ -4,7 +4,7 @@ Lets Velocity 4.0 accept both HAProxy PROXY protocol connections and direct play
 
 让 Velocity 4.0 同时接受「代理连接（HAProxy PROXY protocol）」与「玩家直连」，并且只放行可信来源发来的 PROXY 头。
 
-- Version: **1.1.0**
+- Version: **1.2.0**
 - Author: **JunXieX** (MikuMC Server)
 - QQ Group: **1105054380**
 
@@ -12,18 +12,18 @@ Lets Velocity 4.0 accept both HAProxy PROXY protocol connections and direct play
 
 **为什么需要它**
 
-Velocity's `velocity.toml` has a `proxy-protocol` option. Once it is turned on, Velocity assumes that **every** incoming connection carries an HAProxy PROXY header and installs a decoder at the very front of the pipeline; a connection without a PROXY header is dropped immediately.
+Velocity's `velocity.toml` has a `haproxy-protocol` option. Once it is turned on, Velocity assumes that **every** incoming connection carries an HAProxy PROXY header and installs a decoder at the very front of the pipeline; a connection without a PROXY header is dropped immediately.
 
-Velocity 的 `velocity.toml` 里有一项 `proxy-protocol`。一旦打开，Velocity 就认为**每一条**进来的连接都带着 HAProxy 的 PROXY 头，并在管道最前面挂上解码器；不带 PROXY 头的连接会被直接掐断。
+Velocity 的 `velocity.toml` 里有一项 `haproxy-protocol`。一旦打开，Velocity 就认为**每一条**进来的连接都带着 HAProxy 的 PROXY 头，并在管道最前面挂上解码器；不带 PROXY 头的连接会被直接掐断。
 
 This creates a dilemma:
 
 这带来一个两难：
 
-- Leave `proxy-protocol` off: you cannot see the player's real IP behind HAProxy, so IP bans, login restrictions and risk control all stop working.
-    - 不开 `proxy-protocol`：拿不到经过 HAProxy 之后的玩家真实 IP，IP 封禁、登录限制、风控全部失效。
-- Turn `proxy-protocol` on: only connections through HAProxy get in, and direct player connections (LAN debugging, backup entry points, ops probes) are all rejected.
-    - 开了 `proxy-protocol`：只有经过 HAProxy 的连接能进，玩家直连（内网调试、备用入口、运维探测）全部被拒。
+- Leave `haproxy-protocol` off: you cannot see the player's real IP behind HAProxy, so IP bans, login restrictions and risk control all stop working.
+    - 不开 `haproxy-protocol`：拿不到经过 HAProxy 之后的玩家真实 IP，IP 封禁、登录限制、风控全部失效。
+- Turn `haproxy-protocol` on: only connections through HAProxy get in, and direct player connections (LAN debugging, backup entry points, ops probes) are all rejected.
+    - 开了 `haproxy-protocol`：只有经过 HAProxy 的连接能进，玩家直连（内网调试、备用入口、运维探测）全部被拒。
 
 MikuHAProxy keeps both: it places a detector at the head of the pipeline that decides, from **the first few bytes of the connection**, whether the connection is a proxied one or a direct one, and routes each down its own path.
 
@@ -82,32 +82,32 @@ The decision is progressive: the v2 signature starts with `0x0D` and the v1 pref
 |---|---|
 | Proxy | Velocity 4.0 or newer; **Velocity-CTD** 4.x works as well (both verified) |
 | Java | **Java 25** (Velocity 4.0 itself requires Java 25) |
-| Prerequisite | `proxy-protocol = true` in `velocity.toml` |
+| Prerequisite | `haproxy-protocol = true` in `velocity.toml` |
 
 | 项 | 要求 |
 |---|---|
 | 代理端 | Velocity 4.0 及以上；**Velocity-CTD** 4.x 同样适用（两者均已核对） |
 | Java | **Java 25**（Velocity 4.0 自身要求 Java 25） |
-| 前置配置 | `velocity.toml` 中 `proxy-protocol = true` |
+| 前置配置 | `velocity.toml` 中 `haproxy-protocol = true` |
 
 ## Installation
 
 **安装**
 
-1. Put `MikuHAProxy-1.1.0.jar` into the proxy's `plugins/` directory.
-    - 把 `MikuHAProxy-1.1.0.jar` 放进代理端的 `plugins/` 目录。
+1. Put `MikuHAProxy-1.2.0.jar` into the proxy's `plugins/` directory.
+    - 把 `MikuHAProxy-1.2.0.jar` 放进代理端的 `plugins/` 目录。
 2. Start the proxy once. The plugin creates its data directory `plugins/MikuHAProxy/`, containing `config.toml` and `whitelist.conf`.
     - 启动一次代理。插件会生成数据目录 `plugins/MikuHAProxy/`，内含 `config.toml` 与 `whitelist.conf`。
-3. Set `proxy-protocol = true` in `velocity.toml`, then **restart the proxy** (this option is not hot-reloadable).
-    - 在 `velocity.toml` 中设置 `proxy-protocol = true`，然后**重启代理**（这一项不支持热重载）。
+3. Set `haproxy-protocol = true` in `velocity.toml`, then **restart the proxy** (this option is not hot-reloadable).
+    - 在 `velocity.toml` 中设置 `haproxy-protocol = true`，然后**重启代理**（这一项不支持热重载）。
 4. Write your HAProxy server address into `plugins/MikuHAProxy/whitelist.conf`.
     - 把你的 HAProxy 服务器地址写进 `plugins/MikuHAProxy/whitelist.conf`。
 5. Run `/mikuproxy reload` to apply the whitelist, or simply restart the proxy.
     - 执行 `/mikuproxy reload` 让白名单生效，或直接重启代理。
 
-> If the startup log says that `proxy-protocol` is not enabled in `velocity.toml`, step 3 has not been done yet and the plugin will have no effect.
+> If the startup log says that `haproxy-protocol` is not enabled in `velocity.toml`, step 3 has not been done yet and the plugin will have no effect.
 
-> 启动日志里如果出现「`velocity.toml` 里没有启用 `proxy-protocol`」，说明第 3 步还没做，插件不会起作用。
+> 启动日志里如果出现「`velocity.toml` 里没有启用 `haproxy-protocol`」，说明第 3 步还没做，插件不会起作用。
 
 ## Configuration
 
@@ -123,19 +123,19 @@ It uses only the simplest `key = value` form. **Any mistyped entry simply falls 
 |---|---|---|
 | `allow-all-proxies` | `false` | Whether to accept proxied connections from **any** source. **Never enable this in production** — see the warning below. |
 | `whitelist-file` | `"whitelist.conf"` | Path to the whitelist file. A relative path is resolved against `plugins/MikuHAProxy/`; an absolute path also works. |
-| `log-rejected-connections` | `true` | Whether to output the "proxied connection rejected" and "exception while deciding" log lines. Keeping it on is recommended: it is your first clue that someone is forging IPs. When off, neither kind of log is written, but the counts are still visible under "Rejected" and "Errors" in `status`. |
+| `log-rejected-connections` | `true` | Whether to output the "proxied connection rejected", "exception while deciding" and "connection dropped before deciding" log lines. Keeping it on is recommended: the first two are your first clue that someone is forging IPs. The third is normal network noise and is written only at DEBUG, so it stays invisible unless you enable debug logging. When off, none of the three is written, but the counts of the first two are still visible under "Rejected" and "Errors" in `status`. |
 | `log-accepted-connections` | `false` | Whether to output a log line for every accepted proxied connection. Usually best kept off. |
-| `rejected-log-interval-seconds` | `60` | Minimum interval, in seconds, between rejection logs from the same source address; range `0 ~ 86400`. `0` disables throttling. |
-| `rejected-log-max-tracked` | `4096` | How many source addresses the log throttle tracks at once; range `16 ~ 1000000`. |
+| `rejected-log-interval-seconds` | `60` | Minimum interval, in seconds, between log lines for the same throttle slot (a slot is a log category + source address); range `0 ~ 86400`. `0` disables throttling. |
+| `rejected-log-max-tracked` | `4096` | How many throttle slots (a slot is a log category + source address) the log throttle tracks at once; range `16 ~ 1000000`. |
 
 | 配置项 | 默认值 | 说明 |
 |---|---|---|
 | `allow-all-proxies` | `false` | 是否放行**任何来源**的代理连接。**生产环境绝对不要开启**，详见下方警告。 |
 | `whitelist-file` | `"whitelist.conf"` | 白名单文件路径。相对路径相对于 `plugins/MikuHAProxy/`，也可以写绝对路径。 |
-| `log-rejected-connections` | `true` | 是否输出「代理连接被拒绝」与「判定过程发生异常」这两类日志。建议保持开启，这是发现有人在伪造 IP 的第一手线索；关闭后两类日志都不再输出，次数仍可在 `status` 的「拒绝」「异常」计数里看到。 |
+| `log-rejected-connections` | `true` | 是否输出「代理连接被拒绝」「判定过程发生异常」「连接在判定前被对端中断」三类日志。建议保持开启：前两类是发现有人在伪造 IP 的第一手线索；第三类属正常网络现象，只在 DEBUG 级输出、默认看不到。关闭后三类都不再输出，前两类的次数仍可在 `status` 的「拒绝」「异常」计数里看到。 |
 | `log-accepted-connections` | `false` | 是否输出「代理连接被接受」的日志（每条代理连接一行）。平时建议关闭。 |
-| `rejected-log-interval-seconds` | `60` | 同一来源地址的拒绝日志最短间隔，单位秒，范围 `0 ~ 86400`。`0` 表示不限流。 |
-| `rejected-log-max-tracked` | `4096` | 日志限流器最多同时跟踪多少个来源地址，范围 `16 ~ 1000000`。 |
+| `rejected-log-interval-seconds` | `60` | 同一限流槽（日志分类 + 来源地址）的日志最短间隔，单位秒，范围 `0 ~ 86400`。`0` 表示不限流。 |
+| `rejected-log-max-tracked` | `4096` | 日志限流器最多同时跟踪多少个限流槽（日志分类 + 来源地址），范围 `16 ~ 1000000`。 |
 
 > **About `allow-all-proxies`**: enabling it is the same as disabling the whitelist. Anyone can stand up their own HAProxy and send forged PROXY headers to your proxy, impersonating a player's real IP; IP bans, login restrictions and risk control all stop working. Use it only in a fully isolated test environment that is not exposed to the internet.
 
@@ -183,14 +183,14 @@ Notes:
 | Command | Description |
 |---|---|
 | `/mikuproxy` | Show help |
-| `/mikuproxy status` | Show pipeline injection state, the `proxy-protocol` switch, a whitelist summary, connection counters and uptime |
+| `/mikuproxy status` | Show pipeline injection state, the `haproxy-protocol` switch, a whitelist summary, connection counters and uptime |
 | `/mikuproxy list` | List all whitelist rules currently in effect |
 | `/mikuproxy reload` | Re-read `config.toml` and the whitelist; **effective immediately for connections created afterwards**, existing connections are unaffected. If something in the config is wrong, whoever runs the command sees the list of problems directly (anything beyond the list is in the console log) |
 
 | 命令 | 说明 |
 |---|---|
 | `/mikuproxy` | 显示帮助 |
-| `/mikuproxy status` | 查看管道注入状态、`proxy-protocol` 开关、白名单概览、连接计数、已运行时间 |
+| `/mikuproxy status` | 查看管道注入状态、`haproxy-protocol` 开关、白名单概览、连接计数、已运行时间 |
 | `/mikuproxy list` | 列出当前生效的全部白名单规则 |
 | `/mikuproxy reload` | 重新读取 `config.toml` 与白名单，**立即对之后新建的连接生效**，已建立的连接不受影响。配置里若有写错的项，执行这条命令的人会直接看到问题清单（列不完的部分在控制台日志里） |
 
@@ -211,7 +211,7 @@ What the connection counters in `status` mean:
 | Direct | Connections classified as direct |
 | Proxied | Connections classified as proxied and accepted by the whitelist |
 | Rejected | Connections classified as proxied whose source is not on the whitelist, and which were closed |
-| Not injected | No PROXY decoder was found anywhere in the pipeline (usually means `proxy-protocol` is off in `velocity.toml`) |
+| Not injected | No PROXY decoder was found anywhere in the pipeline (usually means `haproxy-protocol` is off in `velocity.toml`) |
 | Errors | Connections where the decision raised an exception or injection failed, and which were handled as before |
 
 | 计数 | 含义 |
@@ -219,7 +219,7 @@ What the connection counters in `status` mean:
 | 直连 | 判定为直连的连接数 |
 | 代理 | 判定为代理连接、且白名单校验通过的连接数 |
 | 拒绝 | 判定为代理连接但来源不在白名单，已被关闭的连接数 |
-| 未注入 | 管道里没有找到 PROXY 解码器（通常意味着 `velocity.toml` 没开 `proxy-protocol`） |
+| 未注入 | 管道里没有找到 PROXY 解码器（通常意味着 `velocity.toml` 没开 `haproxy-protocol`） |
 | 异常 | 判定过程出现异常或注入失败，已按原有方式处理的连接数 |
 
 ## Troubleshooting
@@ -230,9 +230,9 @@ What the connection counters in `status` mean:
 
 **开启后玩家真实 IP 变成 HAProxy 的地址了？**
 
-The PROXY header is not being trusted. Check in order: whether `proxy-protocol` is `true` in `velocity.toml`, whether HAProxy is configured with `send-proxy` (v1) or `send-proxy-v2`, whether HAProxy's address is in `whitelist.conf`, and whether the "Proxied" counter in `/mikuproxy status` is growing.
+The PROXY header is not being trusted. Check in order: whether `haproxy-protocol` is `true` in `velocity.toml`, whether HAProxy is configured with `send-proxy` (v1) or `send-proxy-v2`, whether HAProxy's address is in `whitelist.conf`, and whether the "Proxied" counter in `/mikuproxy status` is growing.
 
-说明 PROXY 头没被采信。依次检查：`velocity.toml` 的 `proxy-protocol` 是否为 `true`、HAProxy 是否配置了 `send-proxy`（v1）或 `send-proxy-v2`、HAProxy 的地址是否在 `whitelist.conf` 里、`/mikuproxy status` 的「代理」计数是否在增长。
+说明 PROXY 头没被采信。依次检查：`velocity.toml` 的 `haproxy-protocol` 是否为 `true`、HAProxy 是否配置了 `send-proxy`（v1）或 `send-proxy-v2`、HAProxy 的地址是否在 `whitelist.conf` 里、`/mikuproxy status` 的「代理」计数是否在增长。
 
 **HAProxy is configured correctly, yet connections are still rejected?**
 
@@ -246,9 +246,9 @@ Look at the rejection line in the console and at `/mikuproxy list`. The most com
 
 **插件启动后完全没生效？**
 
-Run `/mikuproxy status` and check whether "Pipeline injection" is "Installed" and whether "`proxy-protocol` in `velocity.toml`" is "Enabled". If either one is wrong, the plugin does not change how connections are handled.
+Run `/mikuproxy status` and check whether "Pipeline injection" is "Installed" and whether "`haproxy-protocol` in `velocity.toml`" is "Enabled". If either one is wrong, the plugin does not change how connections are handled.
 
-用 `/mikuproxy status` 看「管道注入」是否为「已安装」、「`velocity.toml` 的 `proxy-protocol`」是否为「已启用」。两者任一不对，插件都不会改变连接处理方式。
+用 `/mikuproxy status` 看「管道注入」是否为「已安装」、「`velocity.toml` 的 `haproxy-protocol`」是否为「已启用」。两者任一不对，插件都不会改变连接处理方式。
 
 **What happens if the config is wrong?**
 

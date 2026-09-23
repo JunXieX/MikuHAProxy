@@ -1,5 +1,13 @@
 name: Build
 
+# ⚠️ 2026-09-23 用户明确：Modrinth 项目在审核中、项目页文案改不了，
+# **暂停 README → Modrinth 正文同步**，且这一停要持续一段时间。
+# 恢复方式：把下面的 MODRINTH_BODY_SYNC 改回 "true"（只有一个开关，不用改步骤）。
+# 注意：这只关「正文/摘要同步」；「Publish to Modrinth」的**版本上传不受审核锁影响**，
+# 正式版 tag 照常上传，因此**不要**被这个开关一并关掉。
+env:
+  MODRINTH_BODY_SYNC: "false"
+
 on:
   push:
     branches: ["**"]
@@ -50,6 +58,10 @@ jobs:
       # 这里把它的原文同步成 Modrinth 的 body，并把开头两句（英文段+中文段）拼成摘要。
       # 只在 main 与 tag 上跑（不从特性分支把未定稿的文档推上去），PR 跳过。
       # 审核期间 Modrinth 会锁编辑，此时只打印警告、不让构建变红。
+      #
+      # 🚫 2026-09-23 用户要求：项目审核期间**暂停本步骤**（审核锁定期正文根本改不了，
+      #    反复 PATCH 只是白跑）。由工作流顶部的 MODRINTH_BODY_SYNC 统一控制，
+      #    当前为 "false" ⇒ 本步骤会被 skip。恢复时改成 "true" 即可，不要删步骤。
       # ------------------------------------------------------------------
       - name: Sync README to Modrinth
         # 放行失败：这一步只是把 README 原文贴到项目页正文，不该有阻断发版的权力。
@@ -60,7 +72,8 @@ jobs:
         # 加 continue-on-error 后该步骤失败仍会标红可查，但不再拖累版本上传。
         continue-on-error: true
         if: >-
-          github.event_name != 'pull_request'
+          env.MODRINTH_BODY_SYNC == 'true'
+          && github.event_name != 'pull_request'
           && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
         env:
           MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
@@ -144,6 +157,9 @@ jobs:
       # Modrinth：只有「正式版」（tag 不含 Beta）才上传；测试版完全跳过。
       # 幂等：该版本号已存在时直接跳过，重复跑工作流不会产生重复版本。
       # 想先验证令牌/项目是否可达，可在 Actions 页面手动触发并勾选 modrinth_check。
+      #
+      # ⚠️ 本步骤**不受** MODRINTH_BODY_SYNC 开关控制：项目审核锁只锁「项目页正文」，
+      #    版本级上传/删除不受影响（2026-09-22 实测）。正式版该发照发。
       # ------------------------------------------------------------------
       - name: Publish to Modrinth
         if: >-
