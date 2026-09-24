@@ -37,6 +37,18 @@ class MikuHAProxyReloadTest {
         return (AtomicReference<DetectorContext>) field.get(plugin);
     }
 
+    /** Velocity 注入的小写目录（首次运行不存在，{@code DataFolder.resolve} 会落到 {@code plugins/MikuHAProxy}）。 */
+    private static Path injectedDataDir(@TempDir Path temp) throws Exception {
+        final Path base = temp.resolve("plugins");
+        Files.createDirectories(base);
+        return base.resolve("mikuhaproxy");
+    }
+
+    /** 构造后实际生效的数据目录（首次运行时 {@code DataFolder.resolve} 定格在目标名上）。 */
+    private static Path effectiveDataDir(@TempDir Path temp) {
+        return temp.resolve("plugins").resolve("MikuHAProxy");
+    }
+
     private static MikuHAProxy plugin(Path dataDir) {
         // 构造函数在加载路径上不触碰 server：DataFolder.resolve 是纯文件系统决策，
         // new ChannelHook 只做字段赋值，writeDefaultResource 读的是 classpath 资源，
@@ -47,8 +59,8 @@ class MikuHAProxyReloadTest {
 
     @Test
     @DisplayName("reload：快照整体替换，计数器跨快照复用，限流器按新参数重建")
-    void reloadKeepsCountersAndRebuildsThrottle(@TempDir Path dir) throws Exception {
-        final MikuHAProxy plugin = plugin(dir);
+    void reloadKeepsCountersAndRebuildsThrottle(@TempDir Path temp) throws Exception {
+        final MikuHAProxy plugin = plugin(injectedDataDir(temp));
         final AtomicReference<DetectorContext> ref = snapshotRef(plugin);
         assertNull(ref.get(), "加载前不应有配置快照");
 
@@ -71,8 +83,8 @@ class MikuHAProxyReloadTest {
 
     @Test
     @DisplayName("reload 失败：保留原有配置快照（before == after），插件继续用旧配置")
-    void failedReloadKeepsPreviousSnapshot(@TempDir Path dir) throws Exception {
-        final MikuHAProxy plugin = plugin(dir);
+    void failedReloadKeepsPreviousSnapshot(@TempDir Path temp) throws Exception {
+        final MikuHAProxy plugin = plugin(injectedDataDir(temp));
         final AtomicReference<DetectorContext> ref = snapshotRef(plugin);
         assertTrue(plugin.loadConfiguration(true));
         final DetectorContext before = ref.get();
@@ -80,7 +92,8 @@ class MikuHAProxyReloadTest {
 
         // 让 reload 必然失败：把 config.toml 换成同名目录，PluginConfig.load 读取时抛 IOException。
         // 这是平台无关的构造方式（「目录不可作为文件读出」在 Linux CI 与 Windows 上行为一致）。
-        final Path configFile = dir.resolve(PluginConfig.FILE_NAME);
+        final Path configFile = effectiveDataDir(temp).resolve(PluginConfig.FILE_NAME);
+        assertTrue(Files.isRegularFile(configFile), "首次加载应已写出 config.toml：" + configFile);
         Files.delete(configFile);
         Files.createDirectory(configFile);
 

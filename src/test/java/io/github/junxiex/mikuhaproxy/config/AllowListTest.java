@@ -197,10 +197,11 @@ class AllowListTest {
         assertTrue(problems.get(0).contains("主机位"), problems.get(0));
         assertTrue(problems.get(0).contains("192.0.0.0/8"), "告警里应给出规范化后的真实范围：" + problems.get(0));
 
-        // 规范化后的规则确实按 192.0.0.0/8 匹配 —— 168.1.10 并不在 /8 内，这正是要告警的原因
+        // 规范化后的规则确实按 192.0.0.0/8 匹配：作者大概率想只放行 192.168.1.10，
+        // 但 /8 把 192.0.0.0~192.255.255.255 全放了进来 —— 这正是必须告警的原因
         final AllowList allow = AllowList.of(parsed);
-        assertTrue(allow.isAllowed(address("192.0.0.1")));
-        assertFalse(allow.isAllowed(address("192.168.0.1")));
+        assertTrue(allow.isAllowed(address("192.168.0.1")), "192.168.0.1 落在 192.0.0.0/8 内（范围被放大）");
+        assertFalse(allow.isAllowed(address("10.0.0.1")), "10.x 不在 192.0.0.0/8 内");
 
         // 主机位为 0 的常规写法不应产生任何告警
         problems.clear();
