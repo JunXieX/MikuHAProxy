@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -90,15 +91,26 @@ class MikuHAProxyReloadTest {
         final DetectorContext before = ref.get();
         assertNotNull(before);
 
-        // 让 reload 必然失败：把 config.toml 换成同名目录，PluginConfig.load 读取时抛 IOException。
-        // 这是平台无关的构造方式（「目录不可作为文件读出」在 Linux CI 与 Windows 上行为一致）。
-        final Path configFile = effectiveDataDir(temp).resolve(PluginConfig.FILE_NAME);
-        assertTrue(Files.isRegularFile(configFile), "首次加载应已写出 config.toml：" + configFile);
-        Files.delete(configFile);
-        Files.createDirectory(configFile);
+        // 让 reload 必然失败：把整个数据目录换成一个同名普通文件。
+        // doLoadConfiguration 的第一步 Files.createDirectories(dataDirectory) 会因此抛 IOException，
+        // 走进「无法创建插件数据目录」的失败分支——这是平台无关的构造方式
+        // （目录位置上有一个普通文件时，Linux CI 与 Windows 都创建不了目录）。
+        // 注意不能用「config.toml 换成目录」来构造失败：PluginConfig.load 对非普通文件
+        // 的处理是「报告 + 用默认配置」，reload 会照常成功。
+        final Path dataDir = effectiveDataDir(temp);
+        try (var walk = Files.walk(dataDir)) {
+            walk.sorted(java.util.Comparator.reverseOrder()).forEach(path -> {
+                try {
+                    Files.delete(path);
+                } catch (IOException ignored) {
+                    // 测试夹具的删除失败不值得掩盖主线断言
+                }
+            });
+        }
+        Files.createFile(dataDir);
 
         final List<String> problems = new ArrayList<>();
-        assertFalse(plugin.loadConfiguration(false, problems::add), "配置读不出来时必须报失败");
+        assertFalse(plugin.loadConfiguration(false, problems::add), "数据目录被文件占用时必须报失败");
         assertSame(before, ref.get(), "失败时必须保留原有快照——线上正在用的配置不能被半新半旧的快照顶掉");
     }
 }
