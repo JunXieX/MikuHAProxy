@@ -189,14 +189,16 @@ class AllowListTest {
     @DisplayName("CIDR 主机位被置位：条目照常生效，但给出告警并按规范化后的网络地址匹配")
     void warnsWhenCidrHostBitsAreSet() throws Exception {
         final List<String> problems = new ArrayList<>();
-        final AllowList allow = AllowList.parseEntry("192.168.1.10/8", problems::add);
+        final List<CidrBlock> parsed = AllowList.parseEntry("192.168.1.10/8", problems::add);
 
-        assertNotNull(allow, "主机位置位只是写法警告，条目应当照常生效");
+        assertNotNull(parsed, "主机位置位只是写法警告，条目应当照常生效");
+        assertEquals(1, parsed.size());
         assertEquals(1, problems.size(), "必须告警，否则用户不会发现范围被放大了");
         assertTrue(problems.get(0).contains("主机位"), problems.get(0));
         assertTrue(problems.get(0).contains("192.0.0.0/8"), "告警里应给出规范化后的真实范围：" + problems.get(0));
 
         // 规范化后的规则确实按 192.0.0.0/8 匹配 —— 168.1.10 并不在 /8 内，这正是要告警的原因
+        final AllowList allow = AllowList.of(parsed);
         assertTrue(allow.isAllowed(address("192.0.0.1")));
         assertFalse(allow.isAllowed(address("192.168.0.1")));
 
