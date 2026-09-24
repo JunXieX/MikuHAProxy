@@ -4,7 +4,7 @@ Lets Velocity 4.0 accept both HAProxy PROXY protocol connections and direct play
 
 让 Velocity 4.0 同时接受「代理连接（HAProxy PROXY protocol）」与「玩家直连」，并且只放行可信来源发来的 PROXY 头。
 
-- Version: **1.2.0**
+- Version: **1.3.0**
 - Author: **JunXieX** (MikuMC Server)
 - QQ Group: **1105054380**
 
@@ -94,8 +94,8 @@ The decision is progressive: the v2 signature starts with `0x0D` and the v1 pref
 
 **安装**
 
-1. Put `MikuHAProxy-1.2.0.jar` into the proxy's `plugins/` directory.
-    - 把 `MikuHAProxy-1.2.0.jar` 放进代理端的 `plugins/` 目录。
+1. Put `MikuHAProxy-1.3.0.jar` into the proxy's `plugins/` directory.
+    - 把 `MikuHAProxy-1.3.0.jar` 放进代理端的 `plugins/` 目录。
 2. Start the proxy once. The plugin creates its data directory `plugins/MikuHAProxy/`, containing `config.toml` and `whitelist.conf`.
     - 启动一次代理。插件会生成数据目录 `plugins/MikuHAProxy/`，内含 `config.toml` 与 `whitelist.conf`。
 3. Set `haproxy-protocol = true` in `velocity.toml`, then **restart the proxy** (this option is not hot-reloadable).
