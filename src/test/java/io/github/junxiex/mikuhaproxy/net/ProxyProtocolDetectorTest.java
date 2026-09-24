@@ -200,6 +200,32 @@ class ProxyProtocolDetectorTest {
     }
 
     @Test
+    @DisplayName("直连不查白名单：即使白名单是 DENY_ALL，直连也照常放行且不计入拒绝")
+    void directConnectionBypassesWhitelist() {
+        // 上面的 directConnectionRemovesItselfAndForwardsBytes 用的是 ALLOW_ALL，其 rejected()==0
+        // 无法区分「没查白名单」与「查了但碰巧放行」；这里换成 DENY_ALL 才能证明直连路径根本不看白名单。
+        final DetectorContext detectorContext = context(AllowList.DENY_ALL);
+        final EmbeddedChannel channel = channelWith(detectorContext);
+        assertNotNull(channel.pipeline().context(ProxyProtocolDetector.HANDLER_NAME), "探测器应当已挂上");
+
+        assertTrue(channel.writeInbound(buffer(HANDSHAKE)));
+        assertNull(channel.pipeline().context(ProxyProtocolDetector.HANDLER_NAME), "探测器应当已从管道摘除");
+
+        final ByteBuf received = channel.readInbound();
+        assertNotNull(received, "直连的握手字节必须被转发出去，不能丢");
+        final byte[] actual = new byte[received.readableBytes()];
+        received.readBytes(actual);
+        assertArrayEquals(HANDSHAKE, actual);
+        received.release();
+
+        assertEquals(1L, detectorContext.counters().direct());
+        assertEquals(0L, detectorContext.counters().rejected(), "直连不查白名单，DENY_ALL 也不应计入拒绝");
+        assertEquals(0L, detectorContext.counters().failures(), "这条路径不应抛出任何异常");
+        assertTrue(channel.isOpen(), "直连不应被关闭");
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
     @DisplayName("前缀不完整时保持等待：字节既不消费也不转发，补全后才做决定")
     void incompletePrefixKeepsBytesBuffered() {
         // 用 DENY_ALL：EmbeddedChannel 没有对端地址，正好覆盖「拿不到地址必须拒绝」这条失败即关闭的路径

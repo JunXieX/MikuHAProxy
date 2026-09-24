@@ -195,6 +195,51 @@ class AllowListTest {
     }
 
     @Test
+    @DisplayName("isIpv4Mapped：只有「前 10 字节全 0 + 第 11/12 字节为 FF:FF」的 16 字节数组才算 IPv4-mapped")
+    void isIpv4MappedTableDriven() {
+        // 合法 IPv4-mapped：::ffff:192.0.2.1
+        assertTrue(AllowList.isIpv4Mapped(mapped16(192, 0, 2, 1)));
+
+        // 16 字节全零（::）：前 10 字节虽然全 0，但第 11/12 字节不是 FF:FF
+        assertFalse(AllowList.isIpv4Mapped(new byte[16]));
+
+        // ::1：前 10 字节全 0，但第 11/12 字节不是 FF:FF
+        final byte[] loopback = new byte[16];
+        loopback[15] = 1;
+        assertFalse(AllowList.isIpv4Mapped(loopback));
+
+        // 4 字节的纯 IPv4：长度不对
+        assertFalse(AllowList.isIpv4Mapped(new byte[]{127, 0, 0, 1}));
+
+        // 空数组：长度不对
+        assertFalse(AllowList.isIpv4Mapped(new byte[0]));
+
+        // 第 11 字节为 FF 但第 12 字节不是 FF：不算
+        final byte[] halfMapped = new byte[16];
+        halfMapped[10] = (byte) 0xFF;
+        halfMapped[11] = 0x00;
+        assertFalse(AllowList.isIpv4Mapped(halfMapped));
+
+        // 第 11/12 字节是 FF:FF 但前 10 字节里有非 0（形如 64:ff9b::… 的 NAT64 前缀）：不算
+        final byte[] nat64 = mapped16(192, 0, 2, 1);
+        nat64[1] = 0x64;
+        nat64[3] = (byte) 0x9B;
+        assertFalse(AllowList.isIpv4Mapped(nat64));
+    }
+
+    /** 构造 ::ffff:a.b.c.d 形态的 16 字节数组。 */
+    private static byte[] mapped16(int a, int b, int c, int d) {
+        final byte[] raw = new byte[16];
+        raw[10] = (byte) 0xFF;
+        raw[11] = (byte) 0xFF;
+        raw[12] = (byte) a;
+        raw[13] = (byte) b;
+        raw[14] = (byte) c;
+        raw[15] = (byte) d;
+        return raw;
+    }
+
+    @Test
     @DisplayName("字面量判定：只有点分四段或含冒号的写法才当地址，其余当域名")
     void recognisesAddressLiterals() {
         assertTrue(AllowList.isAddressLiteral("127.0.0.1"));
