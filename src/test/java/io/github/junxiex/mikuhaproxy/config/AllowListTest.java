@@ -186,6 +186,32 @@ class AllowListTest {
     }
 
     @Test
+    @DisplayName("CIDR 主机位被置位：条目照常生效，但给出告警并按规范化后的网络地址匹配")
+    void warnsWhenCidrHostBitsAreSet() throws Exception {
+        final List<String> problems = new ArrayList<>();
+        final AllowList allow = AllowList.parseEntry("192.168.1.10/8", problems::add);
+
+        assertNotNull(allow, "主机位置位只是写法警告，条目应当照常生效");
+        assertEquals(1, problems.size(), "必须告警，否则用户不会发现范围被放大了");
+        assertTrue(problems.get(0).contains("主机位"), problems.get(0));
+        assertTrue(problems.get(0).contains("192.0.0.0/8"), "告警里应给出规范化后的真实范围：" + problems.get(0));
+
+        // 规范化后的规则确实按 192.0.0.0/8 匹配 —— 168.1.10 并不在 /8 内，这正是要告警的原因
+        assertTrue(allow.isAllowed(address("192.0.0.1")));
+        assertFalse(allow.isAllowed(address("192.168.0.1")));
+
+        // 主机位为 0 的常规写法不应产生任何告警
+        problems.clear();
+        assertNotNull(AllowList.parseEntry("192.0.0.0/8", problems::add));
+        assertTrue(problems.isEmpty(), "主机位为 0 不应有告警：" + problems);
+
+        // /32 没有主机位，天然不告警
+        problems.clear();
+        assertNotNull(AllowList.parseEntry("10.1.2.3/32", problems::add));
+        assertTrue(problems.isEmpty(), "单机前缀不应有告警：" + problems);
+    }
+
+    @Test
     @DisplayName("文件不存在时按「拒绝一切」处理，并报告问题")
     void missingFileDeniesAll(@TempDir Path dir) throws IOException {
         final List<String> problems = new ArrayList<>();

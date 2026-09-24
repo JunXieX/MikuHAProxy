@@ -73,8 +73,8 @@ class LogThrottleTest {
     }
 
     @Test
-    @DisplayName("并发调用下不会出现重复放行同一地址")
-    void concurrentCallsLetExactlyOneThrough() throws Exception {
+    @DisplayName("并发调用下放行次数在 1 与线程数之间（get 与 put 无原子性，刻意允许少量重复放行）")
+    void concurrentCallsAllowBetweenOneAndThreadsThrough() throws Exception {
         final LogThrottle throttle = new LogThrottle(3600, 256);
         final InetAddress peer = address("203.0.113.9");
         final int threads = 8;

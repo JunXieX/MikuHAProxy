@@ -135,4 +135,24 @@ class CidrBlockTest {
         assertEquals("::/0", CidrBlock.of(InetAddress.getByName("::1"), 0).toString());
         assertEquals("::1/128", CidrBlock.ofHost(InetAddress.getByName("::1")).toString());
     }
+
+    @Test
+    @DisplayName("hostBitsSet：前缀之后还有置位比特才为 true（含跨字节边界）")
+    void hostBitsSetDetectsNonzeroHostPortion() {
+        final byte[] v4 = {(byte) 192, (byte) 168, 1, 10};
+        assertTrue(CidrBlock.hostBitsSet(v4, 8), "168.1.10 全是主机位");
+        assertFalse(CidrBlock.hostBitsSet(new byte[]{(byte) 192, 0, 0, 0}, 8), "标准网络地址不应告警");
+        assertFalse(CidrBlock.hostBitsSet(v4, 32), "/32 没有主机位");
+
+        // 跨字节边界：/12 时第 2 个字节的高 4 位是网络位、低 4 位是主机位
+        assertTrue(CidrBlock.hostBitsSet(new byte[]{0x00, 0x0F, 0, 0}, 12));
+        assertFalse(CidrBlock.hostBitsSet(new byte[]{0x00, 0x00, 0, 0}, 12));
+
+        // IPv6：/64 之下、/128 之上
+        final byte[] v6 = new byte[16];
+        v6[15] = 1;
+        assertTrue(CidrBlock.hostBitsSet(v6, 64));
+        assertFalse(CidrBlock.hostBitsSet(v6, 128), "/128 没有主机位");
+        assertFalse(CidrBlock.hostBitsSet(new byte[16], 0), "/0 时全零地址没有主机位");
+    }
 }

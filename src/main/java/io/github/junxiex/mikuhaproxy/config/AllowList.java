@@ -222,6 +222,13 @@ public final class AllowList {
                 }
                 return null;
             }
+            final byte[] raw = address.getAddress();
+            if (prefixBits < maxBits && CidrBlock.hostBitsSet(raw, prefixBits)) {
+                // 语法上合法，不拒绝；但匹配范围会被规范化、几乎必然与写作者的本意不同，
+                // 必须告警，否则「我以为 192.168.1.10/8 只放行一台」会变成静默的 /8 全放行。
+                problem.accept("「" + addressPart + "」主机位不为 0，将按网络地址 "
+                        + CidrBlock.of(address, prefixBits) + " 匹配（若想精确到单机请写 /" + maxBits + "）");
+            }
             rules.add(CidrBlock.of(address, prefixBits));
         }
         return rules;

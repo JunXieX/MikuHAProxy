@@ -93,7 +93,11 @@ public final class MikuHAProxy {
         startedAt = Instant.now();
         try {
             if (!loadConfiguration(true)) {
-                logger.error("初始配置加载失败：插件不会接管连接初始化流程。修正配置后可用 /mikuproxy reload 重试。");
+                // 措辞必须与实际能力一致：registerCommand() 在下面的成功路径上才执行，
+                // 此时 /mikuproxy（包括 reload）并不存在，指过去等于把人引向一条死路。
+                // 在线重载的前提是命令已注册且管道已安装，那都要等下一次成功启动。
+                logger.error("初始配置加载失败：插件不会接管连接初始化流程。"
+                        + "修正配置后请重启代理生效（配置加载成功前 /mikuproxy 命令尚未注册，无法在线重载）。");
                 return;
             }
             if (!hook.install()) {

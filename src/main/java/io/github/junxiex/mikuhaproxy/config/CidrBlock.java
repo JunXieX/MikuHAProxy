@@ -58,6 +58,30 @@ public final class CidrBlock {
     }
 
     /**
+     * 判断 {@code raw} 在 {@code prefixBits} 之后是否还有置位的主机位。
+     *
+     * <p>供白名单解析在「用户写了 {@code 192.168.1.10/8}」这类情况下给出告警：这种写法会被
+     * {@link #mask(byte[], int) 静默规范化} 成 {@code 192.0.0.0/8}，匹配范围与写作者的本意
+     * 几乎必然不同——但按语法它完全合法，不该拒绝，只该提醒。</p>
+     */
+    static boolean hostBitsSet(byte[] raw, int prefixBits) {
+        for (int i = 0; i < raw.length; i++) {
+            final int bitStart = i * 8;
+            if (bitStart >= prefixBits) {
+                if (raw[i] != 0) {
+                    return true;
+                }
+            } else if (bitStart + 8 > prefixBits) {
+                final int networkMask = (0xFF << (8 - (prefixBits - bitStart))) & 0xFF;
+                if ((raw[i] & ~networkMask & 0xFF) != 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
      * 判断候选地址是否落在本规则内（同族、无偏移的常规比较）。
      *
      * <p>要求候选地址与本规则<b>同族</b>（4 字节对 IPv4 规则、16 字节对 IPv6 规则）；
