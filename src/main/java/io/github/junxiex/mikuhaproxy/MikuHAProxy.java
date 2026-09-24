@@ -224,9 +224,45 @@ public final class MikuHAProxy {
      * @param problems 配置问题出口
      */
     private Path resolveWhitelistFile(PluginConfig config, List<String> problems) {
+        return resolveWhitelistFile(config, dataDirectory, problems, Path::of);
+    }
+
+    /**
+     * 把配置里写的字符串解析成路径。
+     *
+     * <p>抽成可注入的接口，是为了能在 Linux CI 上覆盖「解析器抛 {@link InvalidPathException}」这一条
+     * 几乎只会在 Windows 上真的发生的分支：那里遇到 {@code < > : " | ? *} 这类字符或保留设备名
+     * ({@code CON}、{@code NUL}) 才会抛，而同样的字符串在 Linux 上是完全合法的路径，用真实的
+     * {@link Path#of} 造不出这条分支。这与 {@code DataFolder.RealNameReader} 是同一个套路。
+     * 生产路径注入 {@link Path#of}。</p>
+     */
+    @FunctionalInterface
+    interface WhitelistPathParser {
+        Path parse(String value) throws InvalidPathException;
+    }
+
+    /**
+     * 解析白名单文件路径（{@code dataDirectory} 与解析器可注入，便于测试脱离 Velocity 容器覆盖判定逻辑）。
+     *
+     * <p>为什么值得为它写一个可注入的重载：第二个分支
+     * {@code configured.isAbsolute() ? configured : dataDirectory.resolve(configured)} 走的正是
+     * <b>每一个没改过 {@code whitelist-file} 这个配置项的用户</b>的路径 —— 出厂值
+     * {@code whitelist.conf} 是相对路径，必须相对数据目录解析，一旦这里的行为变了，白名单会凭空
+     * 「消失」（插件读不到文件 ⇒ 拒绝所有代理连接），而它此前是零覆盖。</p>
+     *
+     * <p>做成 static 并把 {@code dataDirectory} 变成显式入参，是因为构造 {@link MikuHAProxy}
+     * 需要 Velocity 注入 {@code ProxyServer / Logger / @DataDirectory}，测试里造不出实例。</p>
+     *
+     * @param config        配置
+     * @param dataDirectory 插件数据目录
+     * @param problems      配置问题出口
+     * @param parser        路径解析器；生产传入 {@link Path#of}
+     */
+    static Path resolveWhitelistFile(PluginConfig config, Path dataDirectory, List<String> problems,
+                                     WhitelistPathParser parser) {
         final Path configured;
         try {
-            configured = Path.of(config.whitelistFile());
+            configured = parser.parse(config.whitelistFile());
         } catch (InvalidPathException e) {
             final String fallback = PluginConfig.defaults().whitelistFile();
             problems.add("config.toml：whitelist-file 不是合法路径（「" + config.whitelistFile() + "」："
@@ -324,7 +360,15 @@ public final class MikuHAProxy {
     public void sendReload(CommandSource source) {
         final DetectorContext before = context.get();
         final List<String> problems = new ArrayList<>();
-        if (!loadConfiguration(false, problems::add)) {
+        // 这里刻意传 true，与启动路径（onProxyInitialize）保持一致：两条入口对「白名单文件缺失」
+        // 这个**同一个条件**必须得出同一个结果。
+        // 传 false 时差异是反直觉的：缺失会在 reload 时保持缺失，AllowList.load 于是返回 DENY_ALL
+        // （拒绝一切代理连接）；而重启走的是 writeDefaults = true，会先写出厂模板再读 —— 那份模板里
+        // 带着 127.0.0.0/8 与 ::1/128，于是回环来源被放行。同一个磁盘状态，命令里是拒绝、重启后
+        // 是放行，等于留了一条「重启才生效」的暗门；想用「删掉白名单文件」表达拒绝所有的服主，
+        // 重启后会发现自己其实放行了一段来源。宁可让 reload 也写出厂模板（看得见、可删），
+        // 也不要让两条入口给出相反结论。
+        if (!loadConfiguration(true, problems::add)) {
             source.sendRichMessage("<red>重载失败：配置有误，已继续沿用上一份配置。</red>");
         } else {
             final DetectorContext after = context.get();
