@@ -151,6 +151,33 @@ public final class ChannelHook {
     // 定位 ConnectionManager / ServerChannelInitializerHolder
     // ------------------------------------------------------------------
 
+    /**
+     * 判断一个字段是否持有连接管理器。
+     *
+     * <p>先按类型全限定名比对；退化时只按简单类名比对，是为了在上游把包名挪走之后仍能定位
+     * （不 {@code Class.forName}，那样会直接抛 {@code NoClassDefFoundError}）。</p>
+     */
+    static boolean isConnectionManagerField(Field field) {
+        return field.getType().getName().equals(CONNECTION_MANAGER)
+                || field.getType().getSimpleName().equals("ConnectionManager");
+    }
+
+    /**
+     * 判断一个字段是否持有<b>服务端</b>的连接初始化器持有者。
+     *
+     * <p>连接管理器里 {@code server} / {@code backend} 两个持有者同名同形，只能按字段名区分——
+     * 包住后者会把后端连接也一起改掉。</p>
+     */
+    static boolean isServerInitializerHolderField(Field field) {
+        return field.getName().startsWith("server")
+                && field.getType().getSimpleName().endsWith("ChannelInitializerHolder");
+    }
+
+    /** 判断一个字段是否直接存放连接初始化器（{@link Slot#of} 的兜底路径）。 */
+    static boolean holdsChannelInitializer(Field field) {
+        return ChannelInitializer.class.isAssignableFrom(field.getType());
+    }
+
     private Object resolveConnectionManager() throws ReflectiveOperationException {
         // 1) 上游若未来提供公共访问器，优先使用
         final Method accessor = Reflect.findMethod(server.getClass(), "getConnectionManager");
@@ -159,9 +186,7 @@ public final class ChannelHook {
             return accessor.invoke(server);
         }
         // 2) 否则按「类型全限定名」找字段（不 Class.forName，避免上游挪包后报 NoClassDefFoundError）
-        final Field field = Reflect.findField(server.getClass(),
-                f -> f.getType().getName().equals(CONNECTION_MANAGER)
-                        || f.getType().getSimpleName().equals("ConnectionManager"));
+        final Field field = Reflect.findField(server.getClass(), ChannelHook::isConnectionManagerField);
         if (field == null) {
             throw new NoSuchFieldException("在 " + server.getClass().getName()
                     + " 中找不到 ConnectionManager 字段（当前 Velocity 版本可能不受支持）");
@@ -170,7 +195,14 @@ public final class ChannelHook {
         return field.get(server);
     }
 
-    private Object resolveServerInitializerHolder(Object connectionManager) throws ReflectiveOperationException {
+    /**
+     * 定位「服务端连接初始化器持有者」。
+     *
+     * <p>包内可见而非 private：本方法的字段兜底分支（访问器缺失或返回 {@code null}）只能靠替身对象覆盖，
+     * 见 {@code ChannelHookTest}。语义与异常类型刻意保持不变——{@link NoSuchFieldException} 携带的是
+     * 「在哪个类里找不到什么」，改成 RuntimeException 会让注入失败的日志从可诊断变成含糊。</p>
+     */
+    Object resolveServerInitializerHolder(Object connectionManager) throws ReflectiveOperationException {
         final Method accessor = Reflect.findMethod(connectionManager.getClass(), "getServerChannelInitializer");
         if (accessor != null) {
             accessor.setAccessible(true);
@@ -180,9 +212,7 @@ public final class ChannelHook {
             }
         }
         // 兜底：ConnectionManager 里同时存在 server / backend 两个初始化器持有者，按名字区分开
-        final Field field = Reflect.findField(connectionManager.getClass(),
-                f -> f.getName().startsWith("server")
-                        && f.getType().getSimpleName().endsWith("ChannelInitializerHolder"));
+        final Field field = Reflect.findField(connectionManager.getClass(), ChannelHook::isServerInitializerHolderField);
         if (field == null) {
             throw new NoSuchFieldException("在 " + connectionManager.getClass().getName()
                     + " 中找不到服务端连接初始化器持有者（当前 Velocity 版本可能不受支持）");
@@ -191,8 +221,13 @@ public final class ChannelHook {
         return field.get(connectionManager);
     }
 
-    /** 对「初始化器持有者」的读写抽象：优先用公共方法，方法缺失时退回字段。 */
-    private static final class Slot {
+    /**
+     * 对「初始化器持有者」的读写抽象：优先用公共方法，方法缺失时退回字段。
+     *
+     * <p>包内可见而非 private：两条路径（公共 {@code get()/set(...)} 与直接读写字段）都要能被
+     * {@code ChannelHookTest} 用替身对象分别覆盖。</p>
+     */
+    static final class Slot {
 
         private final Method getter;
         private final Method setter;
@@ -213,8 +248,7 @@ public final class ChannelHook {
                 return new Slot(getter, setter, null);
             }
             // 兜底：直接读写内部字段（Velocity 的 set(...) 带 @Deprecated，未来可能消失）
-            final Field field = Reflect.findField(holder.getClass(),
-                    f -> ChannelInitializer.class.isAssignableFrom(f.getType()));
+            final Field field = Reflect.findField(holder.getClass(), ChannelHook::holdsChannelInitializer);
             if (field == null) {
                 throw new NoSuchFieldException("无法读写 " + holder.getClass().getName() + " 里的初始化器");
             }

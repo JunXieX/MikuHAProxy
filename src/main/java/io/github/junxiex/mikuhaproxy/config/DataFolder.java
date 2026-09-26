@@ -101,6 +101,20 @@ public final class DataFolder {
         return directory.toRealPath().getFileName().toString();
     }
 
+    /**
+     * 移动目录/文件的操作。
+     *
+     * <p>抽成可注入的接口，理由与 {@link RealNameReader} 相同：「改到中间名成功、改到目标名失败、
+     * 回滚也失败」这条分支要求<b>连续两次 move 失败</b>，而第一次 move 已经把目录挪走、原路径必然空出来，
+     * 回滚在真实文件系统上<b>总是会成功</b>，于是这条分支用真实文件系统在任何平台上都构造不出来——
+     * 它恰恰是「绝不能让目录停在中间名上」这条保证的最后一道防线，值得被守住。生产路径注入
+     * {@link Files#move}。</p>
+     */
+    @FunctionalInterface
+    interface Mover {
+        void move(Path source, Path target) throws IOException;
+    }
+
     /** 目录名只有大小写不同时把它掰正；生产入口，用 {@link #realNameOf} 读真实名。 */
     private static void renameCaseInPlace(Path directory, Consumer<String> info, Consumer<String> warn) {
         renameCaseInPlace(directory, info, warn, DataFolder::realNameOf);
@@ -120,6 +134,12 @@ public final class DataFolder {
      */
     static void renameCaseInPlace(Path directory, Consumer<String> info, Consumer<String> warn,
                                   RealNameReader realNameReader) {
+        renameCaseInPlace(directory, info, warn, realNameReader, Files::move);
+    }
+
+    /** 同 {@link #renameCaseInPlace(Path, Consumer, Consumer, RealNameReader)}，移动操作同样可注入。 */
+    static void renameCaseInPlace(Path directory, Consumer<String> info, Consumer<String> warn,
+                                  RealNameReader realNameReader, Mover mover) {
         final String actual;
         try {
             actual = realNameReader.read(directory);
@@ -140,18 +160,18 @@ public final class DataFolder {
             return;
         }
         try {
-            Files.move(directory, staging);
+            mover.move(directory, staging);
         } catch (IOException e) {
             warn.accept("更正数据目录名失败（" + e + "），继续使用 " + directory + "；配置与白名单不受影响。");
             return;
         }
         try {
-            Files.move(staging, target);
+            mover.move(staging, target);
             info.accept("插件数据目录名已由 " + actual + " 更正为 " + NAME + "。");
         } catch (IOException e) {
             try {
                 // 回滚：绝不能让目录停在中间名上，否则下次启动就找不到配置了
-                Files.move(staging, directory);
+                mover.move(staging, directory);
                 warn.accept("更正数据目录名失败（" + e + "），目录已还原为 " + directory
                         + "；配置与白名单不受影响。");
             } catch (IOException rollbackFailure) {
