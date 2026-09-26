@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -245,5 +246,100 @@ class DataFolderTest {
         assertEquals(DataFolder.NAME, onlyEntryName(plugins), "不得做任何 move（父目录仍只有一项且名字不变）");
         assertEquals("127.0.0.0/8\n", Files.readString(desired.resolve("whitelist.conf"), StandardCharsets.UTF_8),
                 "文件内容必须原样可读");
+    }
+
+    // ------------------------------------------------------------------
+    // 中间名与回滚（此前只覆盖了「第一步 move 失败」，剩下的分支真实文件系统构造不出来）
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("上次改名留下的 .renaming 中间目录还在：跳过改名并提示人工处理，两边内容都不动")
+    void skipsWhenStagingDirectoryWasLeftBehind(@TempDir Path plugins) throws IOException {
+        final Path desired = plugins.resolve(DataFolder.NAME);
+        Files.createDirectories(desired);
+        Files.writeString(desired.resolve("whitelist.conf"), "127.0.0.0/8\n", StandardCharsets.UTF_8);
+        final Path staging = plugins.resolve("mikuhaproxy.renaming");
+        Files.createDirectories(staging);
+        Files.writeString(staging.resolve("whitelist.conf"), "10.0.0.1\n", StandardCharsets.UTF_8);
+
+        final Notices notices = new Notices();
+        // 注入 reader 报告「磁盘真实名仍是小写」⇒ 需要掰正，于是走到检查中间名的那一步
+        DataFolder.renameCaseInPlace(desired, notices.info::add, notices.warn::add, directory -> "mikuhaproxy");
+
+        assertEquals(1, notices.warn.size(), notices.warn.toString());
+        assertTrue(notices.warn.get(0).contains(".renaming"),
+                "必须点名那个中间目录，否则用户不知道该处理谁：" + notices.warn.get(0));
+        assertTrue(notices.info.isEmpty(), "什么都没做成，不该有成功提示：" + notices.info);
+        assertEquals("127.0.0.0/8\n", Files.readString(desired.resolve("whitelist.conf"), StandardCharsets.UTF_8),
+                "目标目录的内容不得被碰");
+        assertEquals("10.0.0.1\n", Files.readString(staging.resolve("whitelist.conf"), StandardCharsets.UTF_8),
+                "中间目录的内容必须留着让用户自己判断——覆盖或删除都可能吃掉他的配置");
+    }
+
+    @Test
+    @DisplayName("改到目标名失败但回滚成功：目录还原到原位，配置一处不丢")
+    void rollsBackWhenSecondMoveFails(@TempDir Path plugins) throws IOException {
+        final Path legacy = plugins.resolve("mikuhaproxy");
+        Files.createDirectories(legacy);
+        Files.writeString(legacy.resolve("whitelist.conf"), "10.0.0.1\n", StandardCharsets.UTF_8);
+
+        final Notices notices = new Notices();
+        // 第 1 次 move（改成中间名）真实执行；第 2 次（中间名 → 目标名）失败；第 3 次（回滚）真实执行。
+        // 这条分支用真实文件系统构造不出来：第一次 move 已经把目录挪走，原路径必然空出来。
+        final AtomicInteger calls = new AtomicInteger();
+        final DataFolder.Mover mover = (source, target) -> {
+            if (calls.incrementAndGet() == 2) {
+                throw new IOException("测试构造：这一次改不到目标名");
+            }
+            Files.move(source, target);
+        };
+
+        DataFolder.renameCaseInPlace(legacy, notices.info::add, notices.warn::add,
+                directory -> "mikuhaproxy", mover);
+
+        assertEquals(3, calls.get(), "依次应当是：改中间名、改目标名（失败）、回滚");
+        assertEquals(1, notices.warn.size(), notices.warn.toString());
+        assertTrue(notices.warn.get(0).contains("已还原"), "必须告诉用户目录已经回到原位：" + notices.warn.get(0));
+        assertTrue(notices.info.isEmpty(), notices.info.toString());
+        assertEquals("10.0.0.1\n", Files.readString(legacy.resolve("whitelist.conf"), StandardCharsets.UTF_8),
+                "回滚之后配置必须还在原路径上");
+        assertFalse(Files.exists(plugins.resolve("mikuhaproxy.renaming")), "不得留下中间目录");
+    }
+
+    @Test
+    @DisplayName("改到目标名与回滚都失败：必须明确告知目录停在中间名上、给出路径与要改成的名字")
+    void reportsManuallyWhenRollbackAlsoFails(@TempDir Path plugins) throws IOException {
+        final Path legacy = plugins.resolve("mikuhaproxy");
+        Files.createDirectories(legacy);
+        Files.writeString(legacy.resolve("whitelist.conf"), "10.0.0.1\n", StandardCharsets.UTF_8);
+
+        final Notices notices = new Notices();
+        final AtomicInteger calls = new AtomicInteger();
+        final DataFolder.Mover mover = (source, target) -> {
+            if (calls.incrementAndGet() == 1) {
+                Files.move(source, target);
+                return;
+            }
+            throw new IOException("测试构造：这次 move 失败");
+        };
+
+        DataFolder.renameCaseInPlace(legacy, notices.info::add, notices.warn::add,
+                directory -> "mikuhaproxy", mover);
+
+        assertEquals(3, calls.get(), "回滚也必须被尝试过");
+        assertEquals(1, notices.warn.size(), notices.warn.toString());
+        final String warning = notices.warn.get(0);
+        assertTrue(warning.contains("手动"), "必须明确让用户手动处理，不能只说「失败了」：" + warning);
+        assertTrue(warning.contains("mikuhaproxy.renaming"), "必须给出配置当前实际所在的位置：" + warning);
+        assertTrue(warning.contains(DataFolder.NAME), "必须说明要改成的目标名字：" + warning);
+        assertTrue(notices.info.isEmpty(), notices.info.toString());
+
+        // 磁盘状态：目录确实卡在中间名上——这正是「必须显眼地报警」的条件
+        assertTrue(Files.isDirectory(plugins.resolve("mikuhaproxy.renaming")), "目录应当确实停在中间名上");
+        assertFalse(Files.exists(legacy), "原路径此时是空的，所以用户必须靠这条日志找回配置");
+        assertEquals("10.0.0.1\n",
+                Files.readString(plugins.resolve("mikuhaproxy.renaming").resolve("whitelist.conf"),
+                        StandardCharsets.UTF_8),
+                "配置本身没丢，只是位置变了");
     }
 }
