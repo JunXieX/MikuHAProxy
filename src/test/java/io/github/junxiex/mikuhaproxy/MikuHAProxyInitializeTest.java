@@ -133,8 +133,9 @@ class MikuHAProxyInitializeTest {
 
         assertNotNull(snapshot(plugin).get(), "配置应当加载成功（默认文件由 classpath 资源写出）");
         assertFalse(hook(plugin).isInstalled(), "定位不到连接管理器 ⇒ 注入失败");
-        assertTrue(calls.names.contains("getConfiguration"),
-                "会软读一次 haproxy-protocol 开关（读不到不影响注入结论）：" + calls.names);
+        assertTrue(calls.names.isEmpty(),
+                "注入的第一步就是定位连接管理器，失败发生在碰服务端之前 —— "
+                        + "连「软读 haproxy-protocol 开关」都走不到：" + calls.names);
         assertFalse(calls.names.contains("getCommandManager"),
                 "注入失败时不能注册命令，否则服主会看到一个「能用但没生效」的命令：" + calls.names);
     }

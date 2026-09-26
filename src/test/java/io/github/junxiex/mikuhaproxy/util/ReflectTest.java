@@ -89,7 +89,13 @@ class ReflectTest {
 
         final MethodHandle bound = unbound.bindTo(new Child());
         assertEquals(MethodType.methodType(String.class), bound.type());
-        assertEquals("own", bound.invokeExact());
+
+        // ⚠️ 必须写成 (String) bound.invokeExact()：invokeExact 是签名多态方法，调用点描述符
+        // 由「显式转型」的目标类型确定 —— 直接赋给 String 变量、或塞进 assertEquals(Object, Object)
+        // 的参数位，都会被推成 ()Object，与句柄的 ()String 不匹配而抛 WrongMethodTypeException
+        //（2026-09-26 两种写法都在 CI/离线编译上实测踩过，正是 §7.1 ② 那条红线在测试侧的翻版）。
+        final String value = (String) bound.invokeExact();
+        assertEquals("own", value);
     }
 
     @Test

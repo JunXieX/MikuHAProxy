@@ -316,8 +316,9 @@ public class ChannelHookTest {
 
         assertFalse(hook.install(), "失败由日志承担，不得让异常冒到插件初始化之外");
         assertFalse(hook.isInstalled());
-        assertEquals(1, recorder.count("getConfiguration"),
-                "会先软读一次 haproxy-protocol 开关（读不到不影响注入结论）");
+        assertTrue(recorder.calls.isEmpty(),
+                "定位连接管理器是注入的第一步，失败就发生在碰服务端之前 —— "
+                        + "所以「软读开关」那一步也不该走到，服务端一次都不该被调用：" + recorder.calls);
     }
 
     @Test

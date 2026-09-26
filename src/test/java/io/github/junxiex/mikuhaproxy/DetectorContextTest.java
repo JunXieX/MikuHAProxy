@@ -9,9 +9,12 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.lang.reflect.Method;
 import java.lang.reflect.RecordComponent;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -59,7 +62,28 @@ class DetectorContextTest {
         assertSame(logger, context.logger());
 
         assertTrue(Arrays.stream(DetectorContext.class.getMethods())
-                        .noneMatch(method -> method.getName().startsWith("set")),
-                "快照只读：出现任何 set 方法，重载期间「新连接用新配置、老连接用老配置」的一致性就没了");
+                        .filter(method -> method.getDeclaringClass() == DetectorContext.class)
+                        .map(Method::getName)
+                        .collect(Collectors.toSet())
+                        .equals(SURFACE),
+                "快照的公开表面必须恰好是 5 个读取器 + equals/hashCode/toString。"
+                        + "一旦多出方法（尤其是 setXxx），重载期间「新连接用新配置、老连接用老配置」的一致性就没了。"
+                        + "有意扩展时更新 SURFACE 再确认一遍；实际是 " + surface());
+    }
+
+    /**
+     * 本 record 允许出现的公开表面。
+     *
+     * <p>⚠️ 别改成「名字不以 set 开头」那种图省事的写法：record 的 {@code settings()} 访问器本身就以
+     * {@code set} 开头，宽谓词会把它误判成 setter（2026-09-26 在 CI 上真的踩了一次）。</p>
+     */
+    private static final Set<String> SURFACE =
+            Set.of("allowList", "settings", "counters", "throttle", "logger", "equals", "hashCode", "toString");
+
+    private static Set<String> surface() {
+        return Arrays.stream(DetectorContext.class.getMethods())
+                .filter(method -> method.getDeclaringClass() == DetectorContext.class)
+                .map(Method::getName)
+                .collect(Collectors.toSet());
     }
 }
