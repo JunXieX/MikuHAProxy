@@ -1,0 +1,34 @@
+# ===== 构建产物 =====
+# 本项目是纯 Maven 工程（Maven 只在 CI 里跑），产物目录是 target/
+target/
+out/
+*.jar
+*.war
+*.zip
+*.tar.gz
+
+# ===== IDE =====
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.swp
+*.swo
+
+# ===== 运行环境 / 日志 =====
+run/
+logs/
+plugins/
+*.log
+crash-reports/
+
+# ===== 系统 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 本地工作记录（不属于插件源码） =====
+.workbuddy/
+# 面向开发维护者的内部文档/交接手册：只留在工作区，不入库（仓库只收源码 + README.md）
+PROJECT.md

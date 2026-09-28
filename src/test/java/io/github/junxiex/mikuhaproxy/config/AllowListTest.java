@@ -1,0 +1,304 @@
+package io.github.junxiex.mikuhaproxy.config;
+
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.io.IOException;
+import java.net.Inet6Address;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class AllowListTest {
+
+    private static InetAddress address(String text) throws UnknownHostException {
+        return InetAddress.getByName(text);
+    }
+
+    /**
+     * 构造一个真正的 16 字节 {@link Inet6Address}，内容为 IPv4-mapped 形式。
+     *
+     * <p>{@code InetAddress.getByName("::ffff:127.0.0.1")} 和 {@code InetAddress.getByAddress(...)}
+     * 都会被 JDK 归一化成 Inet4Address，只有 {@code Inet6Address.getByAddress(...)} 会保留 16 字节，
+     * 所以用它来覆盖那条兜底分支。</p>
+     */
+    private static InetAddress mappedIpv4Address(int a, int b, int c, int d) throws UnknownHostException {
+        final byte[] raw = new byte[16];
+        raw[10] = (byte) 0xFF;
+        raw[11] = (byte) 0xFF;
+        raw[12] = (byte) a;
+        raw[13] = (byte) b;
+        raw[14] = (byte) c;
+        raw[15] = (byte) d;
+        return Inet6Address.getByAddress(null, raw, 0);
+    }
+
+    private static AllowList listOf(String... entries) {
+        final List<CidrBlock> rules = new ArrayList<>();
+        for (String text : entries) {
+            final List<CidrBlock> parsed = AllowList.parseEntry(text, message -> {
+                throw new AssertionError("不应出现解析问题：" + message);
+            });
+            rules.addAll(parsed);
+        }
+        return AllowList.of(rules);
+    }
+
+    @Test
+    @DisplayName("单机 IPv4 只放行它自己")
+    void allowsSingleIpv4Host() throws Exception {
+        final AllowList allow = listOf("127.0.0.1");
+        assertTrue(allow.isAllowed(address("127.0.0.1")));
+        assertFalse(allow.isAllowed(address("127.0.0.2")));
+        assertEquals(1, allow.ipv4Count());
+        assertEquals(0, allow.ipv6Count());
+    }
+
+    @Test
+    @DisplayName("IPv4 网段按 CIDR 放行")
+    void allowsIpv4Range() throws Exception {
+        final AllowList allow = listOf("127.0.0.0/8", "10.20.0.0/16");
+        assertTrue(allow.isAllowed(address("127.0.0.1")));
+        assertTrue(allow.isAllowed(address("127.255.255.255")));
+        assertTrue(allow.isAllowed(address("10.20.30.40")));
+        assertFalse(allow.isAllowed(address("10.21.0.1")));
+        assertFalse(allow.isAllowed(address("8.8.8.8")));
+    }
+
+    @Test
+    @DisplayName("IPv6 单机与网段都在 IPv6 规则集里匹配")
+    void allowsIpv6() throws Exception {
+        final AllowList allow = listOf("::1", "fd00::/8");
+        assertTrue(allow.isAllowed(address("::1")));
+        assertTrue(allow.isAllowed(address("fd00::abcd")));
+        assertFalse(allow.isAllowed(address("fe80::1")));
+        assertEquals(0, allow.ipv4Count());
+        assertEquals(2, allow.ipv6Count());
+    }
+
+    @Test
+    @DisplayName("IPv4-mapped IPv6 也能命中 IPv4 规则（兜底分支）")
+    void ipv4MappedAddressMatchesIpv4Rule() throws Exception {
+        final AllowList allow = listOf("127.0.0.0/8");
+        assertTrue(allow.isAllowed(mappedIpv4Address(127, 0, 0, 1)));
+        assertFalse(allow.isAllowed(mappedIpv4Address(10, 0, 0, 1)));
+    }
+
+    @Test
+    @DisplayName("空白名单拒绝一切；拿不到地址时同样拒绝（失败即关闭）")
+    void emptyListDeniesEverything() throws Exception {
+        assertEquals(0, AllowList.DENY_ALL.size());
+        assertFalse(AllowList.DENY_ALL.isAllowed(address("127.0.0.1")));
+        assertFalse(AllowList.DENY_ALL.isAllowed(null));
+        assertFalse(AllowList.DENY_ALL.isAllowed(mappedIpv4Address(127, 0, 0, 1)));
+    }
+
+    @Test
+    @DisplayName("allowAll 放行一切，包括拿不到地址的情况")
+    void allowAllAcceptsEverything() throws Exception {
+        assertTrue(AllowList.ALLOW_ALL.isAllowed(address("8.8.8.8")));
+        assertTrue(AllowList.ALLOW_ALL.isAllowed(null));
+    }
+
+    @Test
+    @DisplayName("读取文件：识别整行注释、行尾注释与空行")
+    void loadsFileIgnoringComments(@TempDir Path dir) throws IOException {
+        final Path file = dir.resolve("whitelist.conf");
+        Files.writeString(file, """
+                # 注释行
+                127.0.0.0/8          # 行尾注释
+
+                ::1/128
+                """, StandardCharsets.UTF_8);
+
+        final List<String> problems = new ArrayList<>();
+        final AllowList allow = AllowList.load(file, problems::add);
+
+        assertTrue(problems.isEmpty(), "不应有问题：" + problems);
+        assertEquals(2, allow.size());
+        assertTrue(allow.isAllowed(address("127.0.0.1")));
+        assertTrue(allow.isAllowed(address("::1")));
+    }
+
+    @Test
+    @DisplayName("非法行只跳过自己，并报出准确行号与原因")
+    void skipsBadLinesWithLineNumbers(@TempDir Path dir) throws IOException {
+        final Path file = dir.resolve("whitelist.conf");
+        Files.writeString(file, """
+                127.0.0.1
+                not_an_address
+                example.com/24
+                10.0.0.0/99
+                :bad::address
+                ::1
+                """, StandardCharsets.UTF_8);
+
+        final List<String> problems = new ArrayList<>();
+        final AllowList allow = AllowList.load(file, problems::add);
+
+        assertEquals(2, allow.size(), "只有第 1 行与最后一行应当生效：" + problems);
+        assertTrue(allow.isAllowed(address("127.0.0.1")));
+        assertTrue(allow.isAllowed(address("::1")));
+
+        assertEquals(4, problems.size(), "四行非法内容各自报告一次：" + problems);
+        assertTrue(problems.get(0).contains("第 2 行"), problems.get(0));
+        assertTrue(problems.get(1).contains("第 3 行"), problems.get(1));
+        assertTrue(problems.get(1).contains("不支持域名"), problems.get(1));
+        assertTrue(problems.get(2).contains("第 4 行"), problems.get(2));
+        assertTrue(problems.get(2).contains("前缀"), problems.get(2));
+        assertTrue(problems.get(3).contains("第 5 行"), problems.get(3));
+        assertTrue(problems.get(3).contains("无法解析"), problems.get(3));
+    }
+
+    @Test
+    @DisplayName("前缀长度与地址族不匹配时给出可执行的提示")
+    void reportsPrefixMismatch() {
+        final List<String> problems = new ArrayList<>();
+        assertNull(AllowList.parseEntry("::ffff:127.0.0.1/128", problems::add));
+        assertEquals(1, problems.size());
+        assertTrue(problems.get(0).contains("IPv4-mapped"), problems.get(0));
+
+        problems.clear();
+        assertNull(AllowList.parseEntry("10.0.0.0/33", problems::add));
+        assertEquals(1, problems.size());
+        assertTrue(problems.get(0).contains("33"), problems.get(0));
+
+        problems.clear();
+        assertNull(AllowList.parseEntry("10.0.0.0/abc", problems::add));
+        assertEquals(1, problems.size());
+        assertTrue(problems.get(0).contains("不是整数"), problems.get(0));
+
+        problems.clear();
+        assertNull(AllowList.parseEntry("/24", problems::add));
+        assertEquals(1, problems.size());
+        assertTrue(problems.get(0).contains("缺少地址"), problems.get(0));
+    }
+
+    @Test
+    @DisplayName("CIDR 主机位被置位：条目照常生效，但给出告警并按规范化后的网络地址匹配")
+    void warnsWhenCidrHostBitsAreSet() throws Exception {
+        final List<String> problems = new ArrayList<>();
+        final List<CidrBlock> parsed = AllowList.parseEntry("192.168.1.10/8", problems::add);
+
+        assertNotNull(parsed, "主机位置位只是写法警告，条目应当照常生效");
+        assertEquals(1, parsed.size());
+        assertEquals(1, problems.size(), "必须告警，否则用户不会发现范围被放大了");
+        assertTrue(problems.get(0).contains("主机位"), problems.get(0));
+        assertTrue(problems.get(0).contains("192.0.0.0/8"), "告警里应给出规范化后的真实范围：" + problems.get(0));
+
+        // 规范化后的规则确实按 192.0.0.0/8 匹配：作者大概率想只放行 192.168.1.10，
+        // 但 /8 把 192.0.0.0~192.255.255.255 全放了进来 —— 这正是必须告警的原因
+        final AllowList allow = AllowList.of(parsed);
+        assertTrue(allow.isAllowed(address("192.168.0.1")), "192.168.0.1 落在 192.0.0.0/8 内（范围被放大）");
+        assertFalse(allow.isAllowed(address("10.0.0.1")), "10.x 不在 192.0.0.0/8 内");
+
+        // 主机位为 0 的常规写法不应产生任何告警
+        problems.clear();
+        assertNotNull(AllowList.parseEntry("192.0.0.0/8", problems::add));
+        assertTrue(problems.isEmpty(), "主机位为 0 不应有告警：" + problems);
+
+        // /32 没有主机位，天然不告警
+        problems.clear();
+        assertNotNull(AllowList.parseEntry("10.1.2.3/32", problems::add));
+        assertTrue(problems.isEmpty(), "单机前缀不应有告警：" + problems);
+    }
+
+    @Test
+    @DisplayName("文件不存在时按「拒绝一切」处理，并报告问题")
+    void missingFileDeniesAll(@TempDir Path dir) throws IOException {
+        final List<String> problems = new ArrayList<>();
+        final AllowList allow = AllowList.load(dir.resolve("nope.conf"), problems::add);
+        assertEquals(0, allow.size());
+        assertEquals(1, problems.size());
+    }
+
+    @Test
+    @DisplayName("isIpv4Mapped：只有「前 10 字节全 0 + 第 11/12 字节为 FF:FF」的 16 字节数组才算 IPv4-mapped")
+    void isIpv4MappedTableDriven() {
+        // 合法 IPv4-mapped：::ffff:192.0.2.1
+        assertTrue(AllowList.isIpv4Mapped(mapped16(192, 0, 2, 1)));
+
+        // 16 字节全零（::）：前 10 字节虽然全 0，但第 11/12 字节不是 FF:FF
+        assertFalse(AllowList.isIpv4Mapped(new byte[16]));
+
+        // ::1：前 10 字节全 0，但第 11/12 字节不是 FF:FF
+        final byte[] loopback = new byte[16];
+        loopback[15] = 1;
+        assertFalse(AllowList.isIpv4Mapped(loopback));
+
+        // 4 字节的纯 IPv4：长度不对
+        assertFalse(AllowList.isIpv4Mapped(new byte[]{127, 0, 0, 1}));
+
+        // 空数组：长度不对
+        assertFalse(AllowList.isIpv4Mapped(new byte[0]));
+
+        // 第 11 字节为 FF 但第 12 字节不是 FF：不算
+        final byte[] halfMapped = new byte[16];
+        halfMapped[10] = (byte) 0xFF;
+        halfMapped[11] = 0x00;
+        assertFalse(AllowList.isIpv4Mapped(halfMapped));
+
+        // 第 11/12 字节是 FF:FF 但前 10 字节里有非 0（形如 64:ff9b::… 的 NAT64 前缀）：不算
+        final byte[] nat64 = mapped16(192, 0, 2, 1);
+        nat64[1] = 0x64;
+        nat64[3] = (byte) 0x9B;
+        assertFalse(AllowList.isIpv4Mapped(nat64));
+    }
+
+    /** 构造 ::ffff:a.b.c.d 形态的 16 字节数组。 */
+    private static byte[] mapped16(int a, int b, int c, int d) {
+        final byte[] raw = new byte[16];
+        raw[10] = (byte) 0xFF;
+        raw[11] = (byte) 0xFF;
+        raw[12] = (byte) a;
+        raw[13] = (byte) b;
+        raw[14] = (byte) c;
+        raw[15] = (byte) d;
+        return raw;
+    }
+
+    @Test
+    @DisplayName("字面量判定：只有点分四段或含冒号的写法才当地址，其余当域名")
+    void recognisesAddressLiterals() {
+        assertTrue(AllowList.isAddressLiteral("127.0.0.1"));
+        assertTrue(AllowList.isAddressLiteral("::1"));
+        assertTrue(AllowList.isAddressLiteral("2001:DB8::1"));
+        assertTrue(AllowList.isAddressLiteral("::ffff:127.0.0.1"));
+
+        assertFalse(AllowList.isAddressLiteral("proxy.example.com"));
+        assertFalse(AllowList.isAddressLiteral("localhost"));
+        assertFalse(AllowList.isAddressLiteral("abc.de"));
+        assertFalse(AllowList.isAddressLiteral("1.2.3"));
+        assertFalse(AllowList.isAddressLiteral("1.2.3.4.5"));
+        assertFalse(AllowList.isAddressLiteral(""));
+    }
+
+    @Test
+    @DisplayName("域名会解析成地址（localhost 一定可解析）")
+    void resolvesHostname() {
+        final List<String> problems = new ArrayList<>();
+        final List<CidrBlock> parsed = AllowList.parseEntry("localhost", problems::add);
+        assertTrue(problems.isEmpty(), "localhost 应当可以解析：" + problems);
+        assertNotNull(parsed);
+        assertFalse(parsed.isEmpty(), "localhost 至少应解析出一条规则");
+    }
+
+    @Test
+    @DisplayName("describeRules 输出条目文本，allowAll 时给出明确标记")
+    void describesRules() {
+        assertEquals(List.of("127.0.0.0/8"), listOf("127.0.0.0/8").describeRules());
+        assertEquals(List.of("<全部放行>"), AllowList.ALLOW_ALL.describeRules());
+        assertTrue(AllowList.DENY_ALL.describeRules().isEmpty());
+    }
+}
