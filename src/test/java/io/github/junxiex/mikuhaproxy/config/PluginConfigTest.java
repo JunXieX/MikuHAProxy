@@ -170,6 +170,25 @@ class PluginConfigTest {
     }
 
     @Test
+    @DisplayName("重复设置项：报出首次出现的行号，取值仍以最后一次为准")
+    void reportsDuplicateKeysKeepingLastValue(@TempDir Path dir) throws IOException {
+        final List<String> problems = new ArrayList<>();
+        final PluginConfig config = load(dir, """
+                log-accepted-connections = true
+                whitelist-file = "first.conf"
+                log-accepted-connections = false
+                """, problems);
+
+        assertEquals(1, problems.size(), problems.toString());
+        assertTrue(problems.get(0).contains("log-accepted-connections"), problems.get(0));
+        assertTrue(problems.get(0).contains("重复"), problems.get(0));
+        assertTrue(problems.get(0).contains("第 3 行"), problems.get(0));
+        assertTrue(problems.get(0).contains("第 1 行"), "必须报出首次出现的行号，否则用户找不到该删哪一行");
+        assertFalse(config.logAcceptedConnections(), "重复时以最后的 false 为准（与旧行为一致）");
+        assertEquals("first.conf", config.whitelistFile(), "其它设置项不受影响");
+    }
+
+    @Test
     @DisplayName("以 # 开头或只有注释的行被完全忽略，不产生问题")
     void ignoresCommentsAndBlankLines(@TempDir Path dir) throws IOException {
         final List<String> problems = new ArrayList<>();

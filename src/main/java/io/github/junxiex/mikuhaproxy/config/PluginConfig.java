@@ -71,6 +71,9 @@ public final class PluginConfig {
         }
 
         final Map<String, String> values = new LinkedHashMap<>();
+        // 首次出现该键的行号：重复键本身仍然按「以最后一次为准」生效，但必须报出来——
+        // 用户往往是在文件里改一处、旧的一处忘了删，静默取后者会让人以为配置没生效。
+        final Map<String, Integer> firstSeenLine = new LinkedHashMap<>();
         try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
             String line;
             int lineNumber = 0;
@@ -97,6 +100,11 @@ public final class PluginConfig {
                 } else if (value.isEmpty()) {
                     problem.accept("config.toml 第 " + lineNumber + " 行：" + key + " 的值为空，已忽略");
                 } else {
+                    final Integer previousLine = firstSeenLine.putIfAbsent(key, lineNumber);
+                    if (previousLine != null) {
+                        problem.accept("config.toml 第 " + lineNumber + " 行：设置项 " + key
+                                + " 重复（上一次在第 " + previousLine + " 行），以本行为准");
+                    }
                     values.put(key, value);
                 }
             }

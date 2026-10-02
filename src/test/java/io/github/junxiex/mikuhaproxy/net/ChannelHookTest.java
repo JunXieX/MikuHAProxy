@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -342,6 +343,55 @@ public class ChannelHookTest {
         assertFalse(hook.isInstalled());
     }
 
+    @Test
+    @DisplayName("卸载：反射失败时保持「已安装」；包装器已被他人换掉时如实置为未安装且不覆盖别人的初始化器")
+    void uninstallReportsTruthfulStateOnFailurePaths() throws Exception {
+        // ① 连「当前挂的是什么」都读不出来 —— 管道上很可能还是我们的包装器，不能谎报已还原
+        final ChannelHook getFails = hookWithoutServer();
+        forceInstalled(getFails, new FlakyHolder(null, 0, false), new VelocityLikeInitializer());
+        getFails.uninstall();
+        assertTrue(getFails.isInstalled(),
+                "读状态失败却置为未安装，会让 /mikuproxy status 与关闭流程都以为管道已经恢复干净");
+
+        // ② 读到了、但写回原始初始化器时失败 —— 同上，保持已安装，留待重试
+        final VelocityLikeInitializer delegate = new VelocityLikeInitializer();
+        final ChannelHook.DetectingInitializer wrapper = new ChannelHook.DetectingInitializer(
+                delegate, ChannelHookTest::context, LoggerFactory.getLogger(ChannelHookTest.class),
+                false, new AtomicBoolean());
+        final ChannelHook setFails = hookWithoutServer();
+        forceInstalled(setFails, new FlakyHolder(wrapper, 1, true), new VelocityLikeInitializer());
+        setFails.uninstall();
+        assertTrue(setFails.isInstalled(), "写回失败时同样必须保持已安装");
+
+        // ③ 读到了、但挂着的是别人的初始化器（被其它插件换掉）—— 如实置为未安装，且绝不能写回去
+        final TestChannelInitializerHolder holder = new TestChannelInitializerHolder();
+        final VelocityLikeInitializer someoneElse = new VelocityLikeInitializer();
+        holder.set(someoneElse);
+        final ChannelHook replaced = hookWithoutServer();
+        forceInstalled(replaced, holder, new VelocityLikeInitializer());
+        replaced.uninstall();
+        assertFalse(replaced.isInstalled(), "包装器已经不在管道上了，就该如实报未安装");
+        assertSame(someoneElse, holder.get(), "不得覆盖别人装的初始化器");
+    }
+
+    /**
+     * 直接摆放 {@link ChannelHook} 的内部状态：用来构造 {@code install()} 本身造不出的情形
+     * （读取/写回失败、包装器已被他人换掉），而不是绕开被测逻辑另写一条实现。
+     */
+    private static void forceInstalled(ChannelHook hook, Object holder, ChannelInitializer<Channel> original)
+            throws ReflectiveOperationException {
+        setHookField(hook, "initializerSlot", ChannelHook.Slot.of(holder));
+        setHookField(hook, "holder", holder);
+        setHookField(hook, "originalInitializer", original);
+        setHookField(hook, "installed", true);
+    }
+
+    private static void setHookField(Object target, String name, Object value) throws ReflectiveOperationException {
+        final Field field = ChannelHook.class.getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(target, value);
+    }
+
     // ------------------------------------------------------------------
     // haproxy-protocol 开关：反射读的是「方法」不是字段
     // ------------------------------------------------------------------
@@ -522,5 +572,37 @@ public class ChannelHookTest {
     private static final class FieldOnlyHolder {
         @SuppressWarnings("unused")
         private ChannelInitializer<Channel> initializer;
+    }
+
+    /**
+     * 可注入故障的持有者替身：第 {@code successfulGets} 次之后的 {@code get()} 抛异常，
+     * {@code set(...)} 可按需抛异常。用来覆盖 {@code uninstall()} 的两条反射失败分支。
+     */
+    static final class FlakyHolder {
+
+        private final ChannelInitializer<Channel> initializer;
+        private final int successfulGets;
+        private final boolean setterThrows;
+        private int gets;
+
+        FlakyHolder(ChannelInitializer<Channel> initializer, int successfulGets, boolean setterThrows) {
+            this.initializer = initializer;
+            this.successfulGets = successfulGets;
+            this.setterThrows = setterThrows;
+        }
+
+        public ChannelInitializer<Channel> get() {
+            if (gets++ >= successfulGets) {
+                throw new IllegalStateException("测试构造：读取初始化器失败");
+            }
+            return initializer;
+        }
+
+        public void set(ChannelInitializer<Channel> value) {
+            if (setterThrows) {
+                throw new IllegalStateException("测试构造：写回初始化器失败");
+            }
+            throw new AssertionError("本用例不应走到写回成功这一步：" + value);
+        }
     }
 }

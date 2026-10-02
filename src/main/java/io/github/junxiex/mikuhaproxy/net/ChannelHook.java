@@ -102,21 +102,37 @@ public final class ChannelHook {
         }
     }
 
-    /** 还原原始初始化器。Velocity 无法卸载插件，这里主要用于优雅关闭与自检。 */
+    /**
+     * 还原原始初始化器。Velocity 无法卸载插件，这里主要用于优雅关闭与自检。
+     *
+     * <p>{@code installed} 只在「确实读到过当前状态」之后才会被清掉：读/写反射失败时管道上
+     * 很可能还挂着我们的包装器，此时谎报「未安装」会让 {@code /mikuproxy status} 与关闭流程
+     * 都以为已经干净退出；保持 {@code true} 则会让状态如实反映现状，也确实还有重试的余地。</p>
+     */
     public void uninstall() {
         if (!installed || initializerSlot == null || holder == null) {
             return;
         }
+        final ChannelInitializer<Channel> current;
         try {
-            final ChannelInitializer<Channel> current = initializerSlot.get(holder);
-            if (current instanceof DetectingInitializer) {
-                initializerSlot.set(holder, originalInitializer);
-            }
+            current = initializerSlot.get(holder);
         } catch (ReflectiveOperationException | RuntimeException e) {
-            logger.warn("还原连接初始化器失败", e);
-        } finally {
-            installed = false;
+            logger.warn("还原连接初始化器失败：读取当前初始化器时出错，保持「已安装」状态以便重试", e);
+            return;
         }
+        if (!(current instanceof DetectingInitializer)) {
+            // 读到了、且已经不是我们的包装器（被其它插件换掉或已被还原）：如实置为未安装，
+            // 同时绝不能再写回去 —— 否则会把别人装的初始化器覆盖掉。
+            installed = false;
+            return;
+        }
+        try {
+            initializerSlot.set(holder, originalInitializer);
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            logger.warn("还原连接初始化器失败：写回原始初始化器时出错，保持「已安装」状态以便重试", e);
+            return;
+        }
+        installed = false;
     }
 
     public boolean isInstalled() {
