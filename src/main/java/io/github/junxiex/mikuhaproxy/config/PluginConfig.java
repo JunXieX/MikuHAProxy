@@ -2,7 +2,6 @@ package io.github.junxiex.mikuhaproxy.config;
 
 import java.io.BufferedReader;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
@@ -65,8 +64,12 @@ public final class PluginConfig {
      * @param problem 问题报告出口
      */
     public static PluginConfig load(Path file, Consumer<String> problem) throws IOException {
-        if (!Files.isRegularFile(file)) {
+        if (!Files.exists(file)) {
             problem.accept("配置文件不存在，使用默认配置：" + file);
+            return defaults();
+        }
+        if (!Files.isRegularFile(file)) {
+            problem.accept("配置路径不是普通文件（可能是目录），使用默认配置：" + file);
             return defaults();
         }
 
@@ -74,13 +77,17 @@ public final class PluginConfig {
         // 首次出现该键的行号：重复键本身仍然按「以最后一次为准」生效，但必须报出来——
         // 用户往往是在文件里改一处、旧的一处忘了删，静默取后者会让人以为配置没生效。
         final Map<String, Integer> firstSeenLine = new LinkedHashMap<>();
-        try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+        boolean decodeIssue = false;
+        try (BufferedReader reader = ConfigText.reader(file)) {
             String line;
             int lineNumber = 0;
             while ((line = reader.readLine()) != null) {
                 lineNumber++;
                 if (lineNumber == 1) {
                     line = stripBom(line);
+                }
+                if (ConfigText.hasDecodeErrors(line)) {
+                    decodeIssue = true;
                 }
                 final String content = stripComment(line).trim();
                 if (content.isEmpty()) {
@@ -111,6 +118,11 @@ public final class PluginConfig {
         }
 
         final PluginConfig defaults = defaults();
+        if (decodeIssue) {
+            problem.accept("config.toml 含有无法按 UTF-8 解码的字节（常见于用记事本按 ANSI / GBK 保存），"
+                    + "这些字符已按替换字符处理；设置项名与值都是 ASCII，通常不受影响，"
+                    + "但建议把文件另存为 UTF-8 以免中文注释变成乱码");
+        }
         return new PluginConfig(
                 bool(values, "allow-all-proxies", defaults.allowAllProxies, problem),
                 text(values, "whitelist-file", defaults.whitelistFile, problem),

@@ -14,7 +14,7 @@ Lets Velocity 4.0 accept both HAProxy PROXY protocol connections and direct play
 
 让 Velocity 4.0 同时接受「代理连接（HAProxy PROXY protocol）」与「玩家直连」，并且只放行可信来源发来的 PROXY 头。
 
-- Version: **1.6.0**
+- Version: **1.7.0**
 - Author: **JunXieX** (MikuMC Server)
 - QQ Group: **1105054380**
 
@@ -104,8 +104,8 @@ The decision is progressive: the v2 signature starts with `0x0D` and the v1 pref
 
 **安装**
 
-1. Put `MikuHAProxy-1.6.0.jar` into the proxy's `plugins/` directory.
-    - 把 `MikuHAProxy-1.6.0.jar` 放进代理端的 `plugins/` 目录。
+1. Put `MikuHAProxy-1.7.0.jar` into the proxy's `plugins/` directory.
+    - 把 `MikuHAProxy-1.7.0.jar` 放进代理端的 `plugins/` 目录。
 2. Start the proxy once. The plugin creates its data directory `plugins/MikuHAProxy/`, containing `config.toml` and `whitelist.conf`.
     - 启动一次代理。插件会生成数据目录 `plugins/MikuHAProxy/`，内含 `config.toml` 与 `whitelist.conf`。
 3. Set `haproxy-protocol = true` in `velocity.toml`, then **restart the proxy** (this option is not hot-reloadable).
@@ -151,6 +151,10 @@ It uses only the simplest `key = value` form. **Any mistyped entry simply falls 
 
 > **关于 `allow-all-proxies`**：打开它等于关闭白名单。任何人都可以自己架一个 HAProxy 向你的代理发送伪造的 PROXY 头，从而伪造玩家真实 IP，IP 封禁、登录限制、风控全部失效。仅在完全隔离、不对公网暴露的测试环境里才可以使用。
 
+> Both files are read as **UTF-8**. If you save them with an editor that uses ANSI / GBK (the Windows Notepad default), the plugin still loads them — the affected characters are replaced and a single warning is printed on the console — but please re-save as UTF-8 so the comments do not turn into mojibake.
+
+> 两个文件都按 **UTF-8** 读取。若用记事本等按 ANSI / GBK 保存，插件仍能正常加载（受影响的字符会被替换，并在控制台提示一次），但建议另存为 UTF-8，以免中文注释变成乱码。
+
 ### `plugins/MikuHAProxy/whitelist.conf`
 
 One rule per line; everything after `#` is a comment and blank lines are ignored.
@@ -194,14 +198,14 @@ Notes:
 |---|---|
 | `/mikuproxy` | Show help |
 | `/mikuproxy status` | Show pipeline injection state, the `haproxy-protocol` switch, a whitelist summary, connection counters and uptime |
-| `/mikuproxy list` | List all whitelist rules currently in effect |
+| `/mikuproxy list` | List all whitelist rules currently in effect (up to 100 lines are echoed; anything beyond that is reported as a total — check `whitelist.conf` for the full list) |
 | `/mikuproxy reload` | Re-read `config.toml` and the whitelist; **effective immediately for connections created afterwards**, existing connections are unaffected. If something in the config is wrong, whoever runs the command sees the list of problems directly (anything beyond the list is in the console log) |
 
 | 命令 | 说明 |
 |---|---|
 | `/mikuproxy` | 显示帮助 |
 | `/mikuproxy status` | 查看管道注入状态、`haproxy-protocol` 开关、白名单概览、连接计数、已运行时间 |
-| `/mikuproxy list` | 列出当前生效的全部白名单规则 |
+| `/mikuproxy list` | 列出当前生效的全部白名单规则（最多逐条回显 100 条，超出部分只报总数，完整内容请查看 `whitelist.conf`） |
 | `/mikuproxy reload` | 重新读取 `config.toml` 与白名单，**立即对之后新建的连接生效**，已建立的连接不受影响。配置里若有写错的项，执行这条命令的人会直接看到问题清单（列不完的部分在控制台日志里） |
 
 Aliases: `/mhp`, `/mikuhaproxy`.

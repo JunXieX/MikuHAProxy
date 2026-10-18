@@ -277,6 +277,30 @@ class MikuProxyCommandTest {
     }
 
     @Test
+    @DisplayName("list：规则超过 100 条时只逐条回显前 100 条，其余报总数（避免把聊天框刷满）")
+    void listCapsEchoedRules(@TempDir Path temp) throws Exception {
+        final Path dir = effectiveDataDir(temp);
+        Files.createDirectories(dir);
+        Files.writeString(dir.resolve(PluginConfig.FILE_NAME), "whitelist-file = \"whitelist.conf\"\n",
+                StandardCharsets.UTF_8);
+        final StringBuilder rules = new StringBuilder();
+        for (int i = 0; i < 130; i++) {
+            rules.append("10.0.").append(i).append(".0/24\n");
+        }
+        Files.writeString(dir.resolve("whitelist.conf"), rules.toString(), StandardCharsets.UTF_8);
+
+        final RecordingSource recorder = new RecordingSource(true);
+        dispatcher(pluginWithConfiguration(temp)).execute("mikuproxy list", commandSource(recorder));
+
+        final String text = recorder.joined();
+        assertTrue(text.contains("白名单规则（130 条）"), text);
+        assertTrue(text.contains("另有 30 条未在此处列出"),
+                "超出上限时必须明确告知还有多少条没显示：" + text);
+        // 1 行标题 + 100 条规则 + 1 行「另有…」
+        assertEquals(102, recorder.messages.size(), "回显行数必须被限制住：" + recorder.messages.size());
+    }
+
+    @Test
     @DisplayName("reload：写错的配置项会被回显给执行者，并说明已回退默认值")
     void reloadReportsConfigProblems(@TempDir Path temp) throws Exception {
         final Path dir = effectiveDataDir(temp);

@@ -56,7 +56,7 @@ public final class MikuHAProxy {
      * 版本号必须与它一致，这条一致性由 {@code VersionTest} 守护。另外 {@code README.md} 的版本行与安装
      * 步骤里的 jar 名也写着版本号，那两处没有自动化守护，改版本时需要手工同步。</p>
      */
-    public static final String VERSION = "1.6.0";
+    public static final String VERSION = "1.7.0";
 
     /**
      * 重载时最多在聊天框里回显多少条配置问题。
@@ -64,6 +64,14 @@ public final class MikuHAProxy {
      * <p>白名单文件可能很长，一行一条问题时刷屏比不报还糟；超出的部分仍然会完整写进控制台日志。</p>
      */
     private static final int MAX_REPORTED_PROBLEMS = 10;
+
+    /**
+     * {@code /mikuproxy list} 最多逐条回显多少条规则。
+     *
+     * <p>白名单完全可能被写成几百上千行（按 IP 逐条放行）。无条件全量回显会把聊天框刷满，
+     * 客户端甚至可能因为一次收到上百个数据包而卡顿或断线；超出的部分只报总数，让用户去看文件。</p>
+     */
+    private static final int MAX_REPORTED_RULES = 100;
 
     private final ProxyServer server;
     private final Logger logger;
@@ -285,6 +293,13 @@ public final class MikuHAProxy {
                 logger.warn("插件资源 {} 缺失，无法生成默认文件", resourceName);
                 return;
             }
+            // 白名单允许写成 "sub/list.conf" 这样的相对子目录：父目录不一定存在，
+            // 不先建出来就会写失败，而白名单缺失等于拒绝所有代理连接——用户只会看到
+            // 「文件不存在」，很难想到是目录没建。
+            final Path parent = target.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
             Files.copy(in, target);
             logger.info("已生成默认文件：{}", target);
         } catch (IOException e) {
@@ -356,8 +371,13 @@ public final class MikuHAProxy {
             return;
         }
         source.sendRichMessage("<gray>白名单规则（" + rules.size() + " 条）：</gray>");
-        for (String rule : rules) {
-            source.sendRichMessage("<dark_gray> · </dark_gray><white>" + esc(rule) + "</white>");
+        final int shown = Math.min(rules.size(), MAX_REPORTED_RULES);
+        for (int i = 0; i < shown; i++) {
+            source.sendRichMessage("<dark_gray> · </dark_gray><white>" + esc(rules.get(i)) + "</white>");
+        }
+        if (rules.size() > shown) {
+            source.sendRichMessage("<dark_gray> · 另有 " + (rules.size() - shown)
+                    + " 条未在此处列出，请直接查看 whitelist.conf。</dark_gray>");
         }
     }
 
@@ -414,7 +434,12 @@ public final class MikuHAProxy {
     }
 
     private String formatUptime() {
-        final Duration duration = Duration.between(startedAt, Instant.now());
+        Duration duration = Duration.between(startedAt, Instant.now());
+        if (duration.isNegative()) {
+            // 系统时钟被 NTP 往回校准时 Duration 会变成负数，各 toXxxPart() 也会跟着返回负值，
+            // 于是状态里出现「-1 分 -30 秒」这种明显是 bug 的读数。钳到 0 比显示负数更可信。
+            duration = Duration.ZERO;
+        }
         final long days = duration.toDays();
         final long hours = duration.toHoursPart();
         final long minutes = duration.toMinutesPart();
@@ -430,9 +455,15 @@ public final class MikuHAProxy {
         return builder.toString();
     }
 
-    /** 转义 MiniMessage 的标签起始符，避免规则文本里的特殊字符破坏格式。 */
+    /**
+     * 转义 MiniMessage 的控制字符，避免规则或用户输入里的特殊字符破坏格式。
+     *
+     * <p>反斜杠必须先转义：MiniMessage 把 {@code \} 当作转义符，Windows 路径
+     * （{@code C:\new\list.conf}）或白名单条目里的反斜杠若不处理，显示时会被吞掉或与后面的
+     * {@code <} 组合成意料之外的转义，导致回显的内容与磁盘上的实际值不一致。</p>
+     */
     private static String esc(String text) {
-        return text.replace("<", "\\<");
+        return text.replace("\\", "\\\\").replace("<", "\\<");
     }
 
 }

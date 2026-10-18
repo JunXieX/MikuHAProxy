@@ -374,7 +374,8 @@ public final class ChannelHook {
                     context.counters().incrementNotInjected();
                     if (proxyProtocolExpected && missingDecoderReported.compareAndSet(false, true)) {
                         logger.warn("velocity.toml 里启用了 haproxy-protocol，但整条管道里都没有 PROXY 解码器"
-                                + "（探测器因此没有注入）；如果本行反复出现请反馈该问题。");
+                                + "（探测器因此没有注入，该连接按 Velocity 原有方式处理）。"
+                                + "此提示每次启动只出现一次，其余同类情况计入 /mikuproxy status 的「未注入」计数。");
                     }
                     return;
                 }

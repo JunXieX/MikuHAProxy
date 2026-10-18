@@ -4,7 +4,6 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -140,19 +139,29 @@ public final class AllowList {
      * @return 解析结果；文件不存在时返回 {@link #DENY_ALL}
      */
     public static AllowList load(Path file, Consumer<String> problem) throws IOException {
-        if (!Files.isRegularFile(file)) {
+        if (!Files.exists(file)) {
             problem.accept("白名单文件不存在：" + file);
+            return DENY_ALL;
+        }
+        if (!Files.isRegularFile(file)) {
+            // 写成目录（或设备文件）时，笼统地报「不存在」会让人去反复检查路径拼写，
+            // 而真正的原因是那份路径指向的根本不是文件。
+            problem.accept("白名单路径不是普通文件（可能是目录）：" + file);
             return DENY_ALL;
         }
 
         final List<CidrBlock> rules = new ArrayList<>();
-        try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+        boolean decodeIssue = false;
+        try (BufferedReader reader = ConfigText.reader(file)) {
             String line;
             int lineNumber = 0;
             while ((line = reader.readLine()) != null) {
                 lineNumber++;
                 if (lineNumber == 1) {
                     line = stripBom(line);
+                }
+                if (ConfigText.hasDecodeErrors(line)) {
+                    decodeIssue = true;
                 }
                 final String entry = stripComment(line).trim();
                 if (entry.isEmpty()) {
@@ -166,6 +175,11 @@ public final class AllowList {
                 }
             }
         }
+        if (decodeIssue) {
+            problem.accept("whitelist.conf 含有无法按 UTF-8 解码的字节（常见于用记事本按 ANSI / GBK 保存），"
+                    + "这些字符已按替换字符处理；IP 与网段规则本身不受影响，"
+                    + "但建议把文件另存为 UTF-8 以免注释变成乱码");
+        }
         return of(rules);
     }
 
@@ -175,8 +189,11 @@ public final class AllowList {
      * @return 解析出的规则；失败时通过 {@code problem} 报告并返回 {@code null}
      */
     static List<CidrBlock> parseEntry(String entry, Consumer<String> problem) {
+        entry = entry.trim();
         final int slash = entry.lastIndexOf('/');
-        final String addressPart = slash < 0 ? entry : entry.substring(0, slash);
+        // 两侧都 trim：`10.0.0.0 /8` 这种「斜杠前多一个空格」的写法在肉眼看来完全正常，
+        // 若不修剪就会因为地址部分末尾的空白被判成「不是 IP 字面量」，用户很难看出原因。
+        final String addressPart = (slash < 0 ? entry : entry.substring(0, slash)).trim();
 
         if (slash < 0) {
             final List<InetAddress> resolved = resolve(entry, true, problem);

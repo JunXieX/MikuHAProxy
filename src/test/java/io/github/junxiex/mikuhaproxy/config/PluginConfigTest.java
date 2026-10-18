@@ -202,4 +202,27 @@ class PluginConfigTest {
         assertTrue(problems.isEmpty(), problems.toString());
         assertTrue(config.logAcceptedConnections());
     }
+
+    @Test
+    @DisplayName("记事本按 ANSI / GBK 保存的文件不会读取失败：设置项照常生效，另报一条编码提示")
+    void nonUtf8FileStillParses(@TempDir Path dir) throws IOException {
+        // 中文 Windows 的记事本默认把文件存成 GBK。GBK 的「中」是 D6 D0，其中 D0 不是合法的
+        // UTF-8 续字节，严格解码会抛 MalformedInputException —— 用户只是改了一行配置，
+        // 插件却报「读取失败」并回退默认值，这是必须兜住的场景。
+        final byte[] content = {
+                '#', ' ',
+                (byte) 0xD6, (byte) 0xD0,
+                '\n',
+                'l', 'o', 'g', '-', 'a', 'c', 'c', 'e', 'p', 't', 'e', 'd', '-',
+                'c', 'o', 'n', 'n', 'e', 'c', 't', 'i', 'o', 'n', 's', ' ', '=', ' ', 't', 'r', 'u', 'e', '\n'};
+        final Path file = dir.resolve(PluginConfig.FILE_NAME);
+        Files.write(file, content);
+
+        final List<String> problems = new ArrayList<>();
+        final PluginConfig config = PluginConfig.load(file, problems::add);
+
+        assertTrue(config.logAcceptedConnections(), "ASCII 的设置项必须照常解析，不能因为注释编码不对就整体失效");
+        assertEquals(1, problems.size(), "应当只报一条编码提示：" + problems);
+        assertTrue(problems.get(0).contains("UTF-8"), "提示必须说清是编码问题：" + problems.get(0));
+    }
 }
