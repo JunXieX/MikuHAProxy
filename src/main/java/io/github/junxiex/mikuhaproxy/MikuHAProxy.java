@@ -117,8 +117,15 @@ public final class MikuHAProxy {
             // 初始化入口必须连 Error 一起接住：包装器的静态初始化失败会抛 ExceptionInInitializerError，
             // 上游内部类消失会抛 NoClassDefFoundError。Velocity 是顺序初始化所有插件的，
             // 让这类错误漏出去就是在拿整个代理的启动开玩笑。
-            logger.error("MikuHAProxy 初始化时出现意外错误，插件将保持加载但不生效。"
-                    + "请把下面的堆栈反馈给插件作者。", t);
+            if (hook.isInstalled()) {
+                // 管道已经接管成功，失败的只可能是后面两步（注册命令 / 打印摘要）。
+                // 此时说「插件不生效」是错的：连接处理已经变了，只是没法再用命令查看状态。
+                logger.error("MikuHAProxy 已完成连接接管，但后续初始化步骤出错"
+                        + "（命令可能未注册，届时 /mikuproxy 不可用）。请把下面的堆栈反馈给插件作者。", t);
+            } else {
+                logger.error("MikuHAProxy 初始化时出现意外错误，插件将保持加载但不生效。"
+                        + "请把下面的堆栈反馈给插件作者。", t);
+            }
         }
     }
 
@@ -354,7 +361,7 @@ public final class MikuHAProxy {
         source.sendRichMessage("<gray>velocity.toml 的 haproxy-protocol：</gray>" + proxyProtocolState(enabled));
         source.sendRichMessage("<gray>白名单：</gray><white>" + esc(snapshot.allowList().toString())
                 + "</white> <dark_gray>(" + snapshot.allowList().size() + " 条规则)</dark_gray>");
-        source.sendRichMessage("<gray>拒绝日志限流：</gray><white>同地址每 "
+        source.sendRichMessage("<gray>拒绝日志限流：</gray><white>同一地址的同类日志每 "
                 + snapshot.settings().rejectedLogIntervalSeconds() + " 秒最多一条</white>");
         source.sendRichMessage("<gray>连接计数：</gray><white>直连 " + counters.direct()
                 + " · 代理 " + counters.proxied()
@@ -393,7 +400,10 @@ public final class MikuHAProxy {
         // 重启后会发现自己其实放行了一段来源。宁可让 reload 也写出厂模板（看得见、可删），
         // 也不要让两条入口给出相反结论。
         if (!loadConfiguration(true, problems::add)) {
-            source.sendRichMessage("<red>重载失败：配置有误，已继续沿用上一份配置。</red>");
+            // 失败原因不只有「配置有误」：数据目录无法创建（磁盘只读、目录被同名文件占用）同样走这里。
+            // 笼统地说成「配置有误」会把人引去反复检查 config.toml，所以这里同时指向控制台日志。
+            source.sendRichMessage("<red>重载失败：已继续沿用上一份配置。</red>"
+                    + " <gray>具体原因见控制台日志。</gray>");
         } else {
             final DetectorContext after = context.get();
             source.sendRichMessage("<green>配置已重载。</green> <gray>白名单 "

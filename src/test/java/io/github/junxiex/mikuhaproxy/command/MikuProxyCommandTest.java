@@ -362,8 +362,8 @@ class MikuProxyCommandTest {
         final RecordingSource recorder = new RecordingSource(true);
         dispatcher(plugin).execute("mikuproxy reload", commandSource(recorder));
 
-        assertTrue(recorder.joined().contains("重载失败：配置有误，已继续沿用上一份配置"),
-                recorder.joined());
+        assertTrue(recorder.joined().contains("重载失败：已继续沿用上一份配置"),
+                "失败原因可能是目录不可写而不只是配置写错，文案不能把范围说窄：" + recorder.joined());
         assertTrue(before == snapshot(plugin).get(), "失败时必须保留原快照，不能半新半旧");
     }
 }

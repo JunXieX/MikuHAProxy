@@ -119,13 +119,20 @@ jobs:
           with open('README.md', encoding='utf-8') as f:
               body = f.read().rstrip() + '\n'
 
-          # 摘要 = README 第一个二级标题之前，第一段纯英文 + 第一段含中文，用 ` ｜ ` 连接
-          head = body.split('\n## ', 1)[0]
+          # 摘要 = README 里「声明段之后」的第一段纯英文 + 第一段含中文，用 ` ｜ ` 连接。
+          # 声明段固定放在最前面（作者、群号、非开源声明），它的第一段并不是「这个插件做什么」，
+          # 所以不能直接取全文第一段——那会把版权声明当成摘要。群号是稳定的定位标记，
+          # 从最后一个含群号的段落之后就属于正文介绍。
           paras = []
-          for raw in re.split(r'\n\s*\n', head):
+          for raw in re.split(r'\n\s*\n', body):
               p = ' '.join(l.strip() for l in raw.strip().splitlines() if l.strip())
               if p and not p.startswith(('#', '- ', '*')):
                   paras.append(p)
+          start = 0
+          for index, paragraph in enumerate(paras):
+              if '1105054380' in paragraph:
+                  start = index + 1
+          paras = paras[start:]
           cjk = re.compile(r'[\u4e00-\u9fff]')
           en = next((p for p in paras if not cjk.search(p)), '')
           zh = next((p for p in paras if cjk.search(p)), '')
