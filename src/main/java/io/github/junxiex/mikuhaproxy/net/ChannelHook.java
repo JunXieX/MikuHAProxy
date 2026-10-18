@@ -321,6 +321,8 @@ public final class ChannelHook {
         private final AtomicBoolean missingDecoderReported;
         /** 注入失败只打一次完整堆栈，之后只计数（总量看 /mikuproxy status）。 */
         private final AtomicBoolean injectionFailureReported = new AtomicBoolean();
+        /** 同一个名字被别的插件占用时只告警一次，避免每条连接刷一行。 */
+        private final AtomicBoolean nameConflictReported = new AtomicBoolean();
 
         DetectingInitializer(ChannelInitializer<Channel> delegate, Supplier<DetectorContext> contexts,
                              Logger logger, boolean proxyProtocolExpected, AtomicBoolean missingDecoderReported) {
@@ -361,7 +363,20 @@ public final class ChannelHook {
                 return;
             }
             final ChannelPipeline pipeline = channel.pipeline();
-            if (pipeline.context(ProxyProtocolDetector.HANDLER_NAME) != null) {
+            final ChannelHandler existing = pipeline.get(ProxyProtocolDetector.HANDLER_NAME);
+            if (existing != null) {
+                if (existing instanceof ProxyProtocolDetector) {
+                    // 已经是我们自己（例如上游把初始化流程走了一遍以上），不必重复注入
+                    return;
+                }
+                // 名字被别的处理器占住了。绝不能当成「已注入」静默放过：那样这条连接会落到
+                // Velocity 原有的 PROXY 解码器上，直连会被掐断，而状态页里一条记录都没有。
+                context.counters().incrementNotInjected();
+                if (nameConflictReported.compareAndSet(false, true)) {
+                    logger.warn("管道里已存在名为 {} 的处理器（不是本插件的探测器），本次未注入；"
+                            + "该连接按 Velocity 原有方式处理。若你同时装了别的 PROXY 相关插件，"
+                            + "请调整它们的加载顺序。", ProxyProtocolDetector.HANDLER_NAME);
+                }
                 return;
             }
 
@@ -374,7 +389,8 @@ public final class ChannelHook {
                     context.counters().incrementNotInjected();
                     if (proxyProtocolExpected && missingDecoderReported.compareAndSet(false, true)) {
                         logger.warn("velocity.toml 里启用了 haproxy-protocol，但整条管道里都没有 PROXY 解码器"
-                                + "（探测器因此没有注入）；如果本行反复出现请反馈该问题。");
+                                + "（探测器因此没有注入，该连接按 Velocity 原有方式处理）。"
+                                + "此提示每次启动只出现一次，其余同类情况计入 /mikuproxy status 的「未注入」计数。");
                     }
                     return;
                 }

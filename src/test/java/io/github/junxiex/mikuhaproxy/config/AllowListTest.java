@@ -224,6 +224,43 @@ class AllowListTest {
     }
 
     @Test
+    @DisplayName("路径指向目录时说清「不是普通文件」，而不是笼统地报「不存在」")
+    void directoryPathIsReportedAsSuch(@TempDir Path dir) throws IOException {
+        final Path asDirectory = dir.resolve("whitelist.conf");
+        Files.createDirectory(asDirectory);
+
+        final List<String> problems = new ArrayList<>();
+        final AllowList allow = AllowList.load(asDirectory, problems::add);
+
+        assertEquals(0, allow.size(), "读不到规则时必须拒绝一切代理连接");
+        assertEquals(1, problems.size(), problems.toString());
+        assertTrue(problems.get(0).contains("不是普通文件"), problems.get(0));
+        assertFalse(problems.get(0).contains("不存在"), "说成「不存在」会把人引向检查路径拼写：" + problems.get(0));
+    }
+
+    @Test
+    @DisplayName("记事本按 ANSI / GBK 保存的白名单不会读取失败：规则照常生效，另报一条编码提示")
+    void nonUtf8FileStillLoadsRules(@TempDir Path dir) throws IOException {
+        // GBK 的「中」是 D6 D0：D6 是合法的 UTF-8 双字节首字节，而 D0 不是合法续字节，
+        // 严格解码会抛 MalformedInputException。
+        final byte[] content = {
+                '#', ' ',
+                (byte) 0xD6, (byte) 0xD0,
+                '\n',
+                '1', '2', '7', '.', '0', '.', '0', '.', '0', '/', '8', '\n'};
+        final Path file = dir.resolve("whitelist.conf");
+        Files.write(file, content);
+
+        final List<String> problems = new ArrayList<>();
+        final AllowList allow = AllowList.load(file, problems::add);
+
+        assertEquals(1, allow.size(), "规则行是纯 ASCII，必须照常解析：" + problems);
+        assertTrue(allow.isAllowed(address("127.0.0.1")));
+        assertEquals(1, problems.size(), "应当只报一条编码提示：" + problems);
+        assertTrue(problems.get(0).contains("UTF-8"), problems.get(0));
+    }
+
+    @Test
     @DisplayName("isIpv4Mapped：只有「前 10 字节全 0 + 第 11/12 字节为 FF:FF」的 16 字节数组才算 IPv4-mapped")
     void isIpv4MappedTableDriven() {
         // 合法 IPv4-mapped：::ffff:192.0.2.1

@@ -204,7 +204,19 @@ public final class ProxyProtocolDetector extends ByteToMessageDecoder {
             // HAProxyMessageDecoder 不是 @Sharable，复用同一个实例再替换一次必然抛 ChannelPipelineException。
             // 重名抛的是 IllegalArgumentException，但复用实例抛的是 ChannelPipelineException（两者都是
             // RuntimeException），所以这里按 RuntimeException 兜，才能真正保证「不会因为重名卡住这条连接」。
-            pipeline.replace(self, null, new HAProxyMessageDecoder());
+            try {
+                pipeline.replace(self, null, new HAProxyMessageDecoder());
+            } catch (RuntimeException fallbackFailure) {
+                // 两次都没换成。此时探测器仍挂在管道上、decided 也已置位，后续字节会被永久丢弃，
+                // 连接会一直挂到对端超时才断——这比直接拒绝更糟（白占一个连接槽且毫无日志）。
+                // 安全侧的做法是关掉这条连接并把失败计入「异常」。
+                context.counters().incrementFailures();
+                if (context.settings().logRejectedConnections() && context.throttle().shouldLog(peer)) {
+                    context.logger().error("已通过白名单校验，但无法把 PROXY 解码器装回管道，已断开该连接"
+                            + "（对端 {}）", AddressFormat.format(peer), fallbackFailure);
+                }
+                ctx.close();
+            }
         }
     }
 

@@ -342,4 +342,31 @@ class DataFolderTest {
                         StandardCharsets.UTF_8),
                 "配置本身没丢，只是位置变了");
     }
+
+    @Test
+    @DisplayName("回滚也失败时返回中间名路径：否则插件会把空出来的旧路径当成首次运行、覆盖出厂模板")
+    void returnsStagingPathWhenRollbackAlsoFails(@TempDir Path plugins) throws IOException {
+        final Path legacy = plugins.resolve("mikuhaproxy");
+        Files.createDirectories(legacy);
+        Files.writeString(legacy.resolve("whitelist.conf"), "10.0.0.1\n", StandardCharsets.UTF_8);
+
+        final Notices notices = new Notices();
+        final AtomicInteger calls = new AtomicInteger();
+        final DataFolder.Mover mover = (source, target) -> {
+            if (calls.incrementAndGet() == 1) {
+                Files.move(source, target);
+                return;
+            }
+            throw new IOException("测试构造：这次 move 失败");
+        };
+
+        final Path resolved = DataFolder.renameCaseInPlace(legacy, notices.info::add, notices.warn::add,
+                directory -> "mikuhaproxy", mover);
+
+        assertEquals(plugins.resolve("mikuhaproxy.renaming"), resolved,
+                "数据现在只可能在中间目录里，返回值必须指向它；"
+                        + "返回已空的旧路径会让插件在那里重建出厂白名单，看起来就像用户配置被清空了");
+        assertEquals("10.0.0.1\n", Files.readString(resolved.resolve("whitelist.conf"), StandardCharsets.UTF_8),
+                "按返回值必须能读回用户原本的配置");
+    }
 }

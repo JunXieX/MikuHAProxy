@@ -27,6 +27,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 发版说明取自「被打 tag 的那个提交」，需要完整历史与 tag 指向的提交本身
+          fetch-depth: 0
 
       - name: Set up JDK 25
         uses: actions/setup-java@v4
@@ -45,13 +48,32 @@ jobs:
           path: target/MikuHAProxy-*.jar
           if-no-files-found: error
 
+      # ------------------------------------------------------------------
+      # Release 说明的唯一来源 = 被打 tag 的那个提交的正文（标题之后的部分）。
+      # 这样「更新日志」与代码变更在同一次提交里评审，不需要在 Actions 里再维护一份，
+      # 也不会被 GitHub 自动汇总的「What's Changed」取代。
+      # 正文为空时给出明确提示，而不是留下一个空白 Release。
+      # ------------------------------------------------------------------
+      - name: Prepare release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          git log -1 --format=%B HEAD | tail -n +2 | sed '/./,$!d' > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            printf '本版未在发版提交的正文中提供更新日志，变更详情请查看提交记录。\n' > release-notes.md
+          fi
+          echo "---- release notes ----"
+          cat release-notes.md
+
       - name: Publish Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: target/MikuHAProxy-*.jar
-          prerelease: ${{ contains(github.ref_name, 'Beta') }}
-          generate_release_notes: true
+          # 版本号规则是纯数字 MAJOR.MINOR.PATCH：第三位归零才是正式版（1.7.0），
+          # 其余都是测试版（1.7.1、1.7.2 …）。不能用「tag 里有没有 Beta」判断——那个后缀已经不用了。
+          prerelease: ${{ !endsWith(github.ref_name, '.0') }}
+          body_path: release-notes.md
+          generate_release_notes: false
 
       # ------------------------------------------------------------------
       # README → Modrinth 项目页：**面向用户的文档只维护 README.md 一份**，
@@ -97,13 +119,20 @@ jobs:
           with open('README.md', encoding='utf-8') as f:
               body = f.read().rstrip() + '\n'
 
-          # 摘要 = README 第一个二级标题之前，第一段纯英文 + 第一段含中文，用 ` ｜ ` 连接
-          head = body.split('\n## ', 1)[0]
+          # 摘要 = README 里「声明段之后」的第一段纯英文 + 第一段含中文，用 ` ｜ ` 连接。
+          # 声明段固定放在最前面（作者、群号、非开源声明），它的第一段并不是「这个插件做什么」，
+          # 所以不能直接取全文第一段——那会把版权声明当成摘要。群号是稳定的定位标记，
+          # 从最后一个含群号的段落之后就属于正文介绍。
           paras = []
-          for raw in re.split(r'\n\s*\n', head):
+          for raw in re.split(r'\n\s*\n', body):
               p = ' '.join(l.strip() for l in raw.strip().splitlines() if l.strip())
               if p and not p.startswith(('#', '- ', '*')):
                   paras.append(p)
+          start = 0
+          for index, paragraph in enumerate(paras):
+              if '1105054380' in paragraph:
+                  start = index + 1
+          paras = paras[start:]
           cjk = re.compile(r'[\u4e00-\u9fff]')
           en = next((p for p in paras if not cjk.search(p)), '')
           zh = next((p for p in paras if cjk.search(p)), '')
@@ -154,7 +183,9 @@ jobs:
           PY
 
       # ------------------------------------------------------------------
-      # Modrinth：只有「正式版」（tag 不含 Beta）才上传；测试版完全跳过。
+      # Modrinth：只有「正式版」才上传；测试版完全跳过。
+      # 版本号是纯数字 MAJOR.MINOR.PATCH，第三位为 0（v1.7.0）才是正式版，
+      # v1.7.1 / v1.7.2 这类都是测试版，不上 Modrinth。
       # 幂等：该版本号已存在时直接跳过，重复跑工作流不会产生重复版本。
       # 想先验证令牌/项目是否可达，可在 Actions 页面手动触发并勾选 modrinth_check。
       #
@@ -163,7 +194,7 @@ jobs:
       # ------------------------------------------------------------------
       - name: Publish to Modrinth
         if: >-
-          (startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, 'Beta'))
+          (startsWith(github.ref, 'refs/tags/') && endsWith(github.ref_name, '.0'))
           || inputs.modrinth_check
         env:
           MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}

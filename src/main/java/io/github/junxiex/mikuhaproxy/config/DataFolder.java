@@ -55,8 +55,7 @@ public final class DataFolder {
         if (isSameDirectory(injected, desired)) {
             // 走这里说明文件系统不区分大小写（Windows / macOS 默认）：两个名字是同一个目录。
             // 但磁盘上记录的大小写未必已是目标名，交给 renameCaseInPlace 按真实文件名判断（必要时才掰正）。
-            renameCaseInPlace(injected, info, warn);
-            return injected;
+            return renameCaseInPlace(injected, info, warn);
         }
 
         if (Files.isDirectory(desired)) {
@@ -115,9 +114,13 @@ public final class DataFolder {
         void move(Path source, Path target) throws IOException;
     }
 
-    /** 目录名只有大小写不同时把它掰正；生产入口，用 {@link #realNameOf} 读真实名。 */
-    private static void renameCaseInPlace(Path directory, Consumer<String> info, Consumer<String> warn) {
-        renameCaseInPlace(directory, info, warn, DataFolder::realNameOf);
+    /**
+     * 目录名只有大小写不同时把它掰正；生产入口，用 {@link #realNameOf} 读真实名。
+     *
+     * @return 实际应当使用的目录（改名成功时是新名字；回滚失败时是中间名，绝不能是那个已空的旧路径）
+     */
+    private static Path renameCaseInPlace(Path directory, Consumer<String> info, Consumer<String> warn) {
+        return renameCaseInPlace(directory, info, warn, DataFolder::realNameOf);
     }
 
     /**
@@ -132,13 +135,19 @@ public final class DataFolder {
      * 都白做一轮两次 move 并打一行日志（第二步若失败，目录还会卡在中间名上）。改读真实名后，磁盘上已经是
      * 目标名就直接返回，不打日志、不做任何 move。</p>
      */
-    static void renameCaseInPlace(Path directory, Consumer<String> info, Consumer<String> warn,
+    static Path renameCaseInPlace(Path directory, Consumer<String> info, Consumer<String> warn,
                                   RealNameReader realNameReader) {
-        renameCaseInPlace(directory, info, warn, realNameReader, Files::move);
+        return renameCaseInPlace(directory, info, warn, realNameReader, Files::move);
     }
 
-    /** 同 {@link #renameCaseInPlace(Path, Consumer, Consumer, RealNameReader)}，移动操作同样可注入。 */
-    static void renameCaseInPlace(Path directory, Consumer<String> info, Consumer<String> warn,
+    /**
+     * 同 {@link #renameCaseInPlace(Path, Consumer, Consumer, RealNameReader)}，移动操作同样可注入。
+     *
+     * @return 实际应当使用的目录。<b>回滚也失败时返回中间名所在的路径</b>：那一刻用户的数据确实在
+     *         那里，若仍返回已空的旧路径，插件会把它当成首次运行、在旧路径上重新生成出厂模板，
+     *         于是用户的白名单「看起来被清空了」，而他原本的文件还躺在 {@code *.renaming} 里没人知道。
+     */
+    static Path renameCaseInPlace(Path directory, Consumer<String> info, Consumer<String> warn,
                                   RealNameReader realNameReader, Mover mover) {
         final String actual;
         try {
@@ -146,37 +155,41 @@ public final class DataFolder {
         } catch (IOException e) {
             warn.accept("无法读取数据目录 " + directory + " 的真实名称（" + e + "），已跳过改名；"
                     + "配置与白名单不受影响。");
-            return;
+            return directory;
         }
         if (actual.equals(NAME)) {
             // 磁盘上已经是目标大小写：什么都不做，也不打任何日志
-            return;
+            return directory;
         }
         final Path target = directory.resolveSibling(NAME);
         final Path staging = directory.resolveSibling(actual + RENAMING_SUFFIX);
         if (Files.exists(staging)) {
             warn.accept("检测到上次改名留下的中间目录 " + staging + "，已跳过改名；"
                     + "请确认其中没有你需要的文件后手动处理。");
-            return;
+            return directory;
         }
         try {
             mover.move(directory, staging);
         } catch (IOException e) {
             warn.accept("更正数据目录名失败（" + e + "），继续使用 " + directory + "；配置与白名单不受影响。");
-            return;
+            return directory;
         }
         try {
             mover.move(staging, target);
             info.accept("插件数据目录名已由 " + actual + " 更正为 " + NAME + "。");
+            return target;
         } catch (IOException e) {
             try {
                 // 回滚：绝不能让目录停在中间名上，否则下次启动就找不到配置了
                 mover.move(staging, directory);
                 warn.accept("更正数据目录名失败（" + e + "），目录已还原为 " + directory
                         + "；配置与白名单不受影响。");
+                return directory;
             } catch (IOException rollbackFailure) {
                 warn.accept("更正数据目录名失败（" + e + "），且还原也失败了（" + rollbackFailure + "）。"
-                        + "你的配置目前在 " + staging + "，请手动把它改名为 " + NAME + "。");
+                        + "你的配置目前在 " + staging + "，请手动把它改名为 " + NAME + "。"
+                        + "本次启动将直接使用这个目录，以免你的白名单被当成「文件不存在」。");
+                return staging;
             }
         }
     }

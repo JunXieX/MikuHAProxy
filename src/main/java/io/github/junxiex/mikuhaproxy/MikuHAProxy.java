@@ -56,7 +56,7 @@ public final class MikuHAProxy {
      * 版本号必须与它一致，这条一致性由 {@code VersionTest} 守护。另外 {@code README.md} 的版本行与安装
      * 步骤里的 jar 名也写着版本号，那两处没有自动化守护，改版本时需要手工同步。</p>
      */
-    public static final String VERSION = "1.6.0";
+    public static final String VERSION = "1.7.0";
 
     /**
      * 重载时最多在聊天框里回显多少条配置问题。
@@ -64,6 +64,14 @@ public final class MikuHAProxy {
      * <p>白名单文件可能很长，一行一条问题时刷屏比不报还糟；超出的部分仍然会完整写进控制台日志。</p>
      */
     private static final int MAX_REPORTED_PROBLEMS = 10;
+
+    /**
+     * {@code /mikuproxy list} 最多逐条回显多少条规则。
+     *
+     * <p>白名单完全可能被写成几百上千行（按 IP 逐条放行）。无条件全量回显会把聊天框刷满，
+     * 客户端甚至可能因为一次收到上百个数据包而卡顿或断线；超出的部分只报总数，让用户去看文件。</p>
+     */
+    private static final int MAX_REPORTED_RULES = 100;
 
     private final ProxyServer server;
     private final Logger logger;
@@ -109,8 +117,15 @@ public final class MikuHAProxy {
             // 初始化入口必须连 Error 一起接住：包装器的静态初始化失败会抛 ExceptionInInitializerError，
             // 上游内部类消失会抛 NoClassDefFoundError。Velocity 是顺序初始化所有插件的，
             // 让这类错误漏出去就是在拿整个代理的启动开玩笑。
-            logger.error("MikuHAProxy 初始化时出现意外错误，插件将保持加载但不生效。"
-                    + "请把下面的堆栈反馈给插件作者。", t);
+            if (hook.isInstalled()) {
+                // 管道已经接管成功，失败的只可能是后面两步（注册命令 / 打印摘要）。
+                // 此时说「插件不生效」是错的：连接处理已经变了，只是没法再用命令查看状态。
+                logger.error("MikuHAProxy 已完成连接接管，但后续初始化步骤出错"
+                        + "（命令可能未注册，届时 /mikuproxy 不可用）。请把下面的堆栈反馈给插件作者。", t);
+            } else {
+                logger.error("MikuHAProxy 初始化时出现意外错误，插件将保持加载但不生效。"
+                        + "请把下面的堆栈反馈给插件作者。", t);
+            }
         }
     }
 
@@ -285,6 +300,13 @@ public final class MikuHAProxy {
                 logger.warn("插件资源 {} 缺失，无法生成默认文件", resourceName);
                 return;
             }
+            // 白名单允许写成 "sub/list.conf" 这样的相对子目录：父目录不一定存在，
+            // 不先建出来就会写失败，而白名单缺失等于拒绝所有代理连接——用户只会看到
+            // 「文件不存在」，很难想到是目录没建。
+            final Path parent = target.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
             Files.copy(in, target);
             logger.info("已生成默认文件：{}", target);
         } catch (IOException e) {
@@ -339,7 +361,7 @@ public final class MikuHAProxy {
         source.sendRichMessage("<gray>velocity.toml 的 haproxy-protocol：</gray>" + proxyProtocolState(enabled));
         source.sendRichMessage("<gray>白名单：</gray><white>" + esc(snapshot.allowList().toString())
                 + "</white> <dark_gray>(" + snapshot.allowList().size() + " 条规则)</dark_gray>");
-        source.sendRichMessage("<gray>拒绝日志限流：</gray><white>同地址每 "
+        source.sendRichMessage("<gray>拒绝日志限流：</gray><white>同一地址的同类日志每 "
                 + snapshot.settings().rejectedLogIntervalSeconds() + " 秒最多一条</white>");
         source.sendRichMessage("<gray>连接计数：</gray><white>直连 " + counters.direct()
                 + " · 代理 " + counters.proxied()
@@ -356,8 +378,13 @@ public final class MikuHAProxy {
             return;
         }
         source.sendRichMessage("<gray>白名单规则（" + rules.size() + " 条）：</gray>");
-        for (String rule : rules) {
-            source.sendRichMessage("<dark_gray> · </dark_gray><white>" + esc(rule) + "</white>");
+        final int shown = Math.min(rules.size(), MAX_REPORTED_RULES);
+        for (int i = 0; i < shown; i++) {
+            source.sendRichMessage("<dark_gray> · </dark_gray><white>" + esc(rules.get(i)) + "</white>");
+        }
+        if (rules.size() > shown) {
+            source.sendRichMessage("<dark_gray> · 另有 " + (rules.size() - shown)
+                    + " 条未在此处列出，请直接查看 whitelist.conf。</dark_gray>");
         }
     }
 
@@ -373,7 +400,10 @@ public final class MikuHAProxy {
         // 重启后会发现自己其实放行了一段来源。宁可让 reload 也写出厂模板（看得见、可删），
         // 也不要让两条入口给出相反结论。
         if (!loadConfiguration(true, problems::add)) {
-            source.sendRichMessage("<red>重载失败：配置有误，已继续沿用上一份配置。</red>");
+            // 失败原因不只有「配置有误」：数据目录无法创建（磁盘只读、目录被同名文件占用）同样走这里。
+            // 笼统地说成「配置有误」会把人引去反复检查 config.toml，所以这里同时指向控制台日志。
+            source.sendRichMessage("<red>重载失败：已继续沿用上一份配置。</red>"
+                    + " <gray>具体原因见控制台日志。</gray>");
         } else {
             final DetectorContext after = context.get();
             source.sendRichMessage("<green>配置已重载。</green> <gray>白名单 "
@@ -414,7 +444,12 @@ public final class MikuHAProxy {
     }
 
     private String formatUptime() {
-        final Duration duration = Duration.between(startedAt, Instant.now());
+        Duration duration = Duration.between(startedAt, Instant.now());
+        if (duration.isNegative()) {
+            // 系统时钟被 NTP 往回校准时 Duration 会变成负数，各 toXxxPart() 也会跟着返回负值，
+            // 于是状态里出现「-1 分 -30 秒」这种明显是 bug 的读数。钳到 0 比显示负数更可信。
+            duration = Duration.ZERO;
+        }
         final long days = duration.toDays();
         final long hours = duration.toHoursPart();
         final long minutes = duration.toMinutesPart();
@@ -430,9 +465,15 @@ public final class MikuHAProxy {
         return builder.toString();
     }
 
-    /** 转义 MiniMessage 的标签起始符，避免规则文本里的特殊字符破坏格式。 */
+    /**
+     * 转义 MiniMessage 的控制字符，避免规则或用户输入里的特殊字符破坏格式。
+     *
+     * <p>反斜杠必须先转义：MiniMessage 把 {@code \} 当作转义符，Windows 路径
+     * （{@code C:\new\list.conf}）或白名单条目里的反斜杠若不处理，显示时会被吞掉或与后面的
+     * {@code <} 组合成意料之外的转义，导致回显的内容与磁盘上的实际值不一致。</p>
+     */
     private static String esc(String text) {
-        return text.replace("<", "\\<");
+        return text.replace("\\", "\\\\").replace("<", "\\<");
     }
 
 }
