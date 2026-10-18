@@ -19,6 +19,10 @@ on:
         description: "只在 Modrinth 做一次只读校验（检查令牌/项目可达性，不上传任何东西）"
         type: boolean
         default: false
+      modrinth_sync_tag:
+        description: "按该 tag（如 v1.7.0）把 GitHub Release 正文同步成 Modrinth 版本的更新日志；只改日志，不重复上传 jar"
+        type: string
+        default: ""
 
 jobs:
   build:
@@ -186,7 +190,9 @@ jobs:
       # Modrinth：只有「正式版」才上传；测试版完全跳过。
       # 版本号是纯数字 MAJOR.MINOR.PATCH，第三位为 0（v1.7.0）才是正式版，
       # v1.7.1 / v1.7.2 这类都是测试版，不上 Modrinth。
-      # 幂等：该版本号已存在时直接跳过，重复跑工作流不会产生重复版本。
+      # 幂等：该版本号已存在时不再重复上传（不会产生重复版本）。
+      # 但若 GitHub Release 正文在发版后被修正（例如更正更新日志里的数字），
+      # 已存在的 Modrinth 版本会按正文把 changelog 同步一次——否则那份错误就永久留在项目页上。
       # 想先验证令牌/项目是否可达，可在 Actions 页面手动触发并勾选 modrinth_check。
       #
       # ⚠️ 本步骤**不受** MODRINTH_BODY_SYNC 开关控制：项目审核锁只锁「项目页正文」，
@@ -196,11 +202,16 @@ jobs:
         if: >-
           (startsWith(github.ref, 'refs/tags/') && endsWith(github.ref_name, '.0'))
           || inputs.modrinth_check
+          || inputs.modrinth_sync_tag
         env:
           MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
+          # 手动触发时用它覆盖 TAG：那种情况下 github.ref_name 是分支名，不是版本号。
+          # 为什么不在表达式里合并：inputs 在 push 事件下为 null，字符串比较的行为容易踩坑，
+          # 放到 Python 里用 `or` 合并语义最直白。
+          SYNC_TAG: ${{ inputs.modrinth_sync_tag }}
           MODRINTH_CHECK_ONLY: ${{ inputs.modrinth_check }}
           # 支持的游戏版本（与 Modrinth 项目元数据保持一致）；上游新增 MC 版本时改这一行
           GAME_VERSIONS: "26.1,26.1.1,26.1.2,26.2,26.3"
@@ -218,7 +229,8 @@ jobs:
           PROJECT = 'SPh6m4k5'
           TOKEN = os.environ['MODRINTH_TOKEN']
           CHECK_ONLY = (os.environ.get('MODRINTH_CHECK_ONLY') or '').strip().lower() == 'true'
-          TAG = os.environ['TAG']
+          # SYNC_TAG 只在手动触发时出现；push 事件下它是空串，此时用 tag 名（与旧行为一致）
+          TAG = (os.environ.get('SYNC_TAG') or '').strip() or os.environ['TAG']
           VERSION = TAG.lstrip('v')
           GAME_VERSIONS = [v for v in (os.environ.get('GAME_VERSIONS') or '').split(',') if v]
           LOADERS = ['velocity']
@@ -242,15 +254,11 @@ jobs:
           if status != 200:
               print('读取项目版本失败:', status, versions)
               sys.exit(1)
-          existing = [v['version_number'] for v in versions]
-          print('项目 %s 现有版本:' % PROJECT, existing or '(空)')
+          existing = {v['version_number']: v for v in versions}
+          print('项目 %s 现有版本:' % PROJECT, list(existing) or '(空)')
 
           if CHECK_ONLY:
               print('[check-only] 只读校验通过：令牌可用、项目可访问、未上传任何内容')
-              sys.exit(0)
-
-          if VERSION in existing:
-              print('[skip] Modrinth 上已存在 %s，跳过上传（幂等）' % VERSION)
               sys.exit(0)
 
           # changelog 复用 GitHub Release 正文，避免两处各写一份
@@ -267,6 +275,20 @@ jobs:
                   changelog = body
           except Exception as exc:
               print('取 GitHub Release 正文失败，改用兜底 changelog:', repr(exc))
+
+          if VERSION in existing:
+              current = existing[VERSION]
+              if (current.get('changelog') or '').strip() == changelog.strip():
+                  print('[skip] Modrinth 上已存在 %s 且更新日志一致，跳过上传（幂等）' % VERSION)
+                  sys.exit(0)
+              status, resp = call('PATCH', '/version/%s' % current['id'],
+                                  json.dumps({'changelog': changelog}, ensure_ascii=False).encode(),
+                                  'application/json')
+              if status in (200, 204):
+                  print('已同步 %s 的更新日志到 Modrinth（版本本身未重复上传）' % VERSION)
+                  sys.exit(0)
+              print('同步更新日志失败:', status, resp)
+              sys.exit(1)
 
           jars = [p for p in glob.glob('target/MikuHAProxy-*.jar')
                   if 'original-' not in os.path.basename(p)]
