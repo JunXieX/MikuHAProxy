@@ -4,11 +4,9 @@
 
 **声明**
 
-This project is an original plugin of the MikuMC server, released to the public free of charge. The MikuMC server and the author JunXieX hold the copyright of this project. This project is not open source, please note.
+This project is an original plugin of the MikuMC server, released to the public free of charge. The MikuMC server and the author JunXieX hold the copyright of this project. This project is not open source, please do not redistribute it.
 
-本项目为 MikuMC 服务器原创插件，公开给大众免费使用，MikuMC 服务器与作者 JunXieX 享有项目著作权，本项目非开源项目，请注意。
-
-MikuMC 系列插件交流群：**1105054380**
+本项目为 MikuMC 服务器原创插件。作者：**JunXieX** ｜ MikuMC系列插件交流群：**1105054380** ｜ 非开源项目，请勿二次分发
 
 Lets Velocity 4.0 accept both HAProxy PROXY protocol connections and direct player connections, while trusting PROXY headers only from whitelisted sources.
 
