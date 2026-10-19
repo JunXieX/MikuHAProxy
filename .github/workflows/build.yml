@@ -49,6 +49,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: jars
+          retention-days: 1
           path: target/MikuHAProxy-*.jar
           if-no-files-found: error
 
